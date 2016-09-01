@@ -307,6 +307,8 @@ private:
 
     std::vector <PESection> sections;
 
+    // TODO: create 
+
     struct PESectionAllocation
     {
         // TODO: once we begin differing between PE file version we have to be
