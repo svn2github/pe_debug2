@@ -13,6 +13,8 @@ thread_local std::string myTestString = "hello_world";
 thread_local std::string debugStringOfValue = "debug entry world";
 thread_local int myValueTest = 1337;
 
+__declspec(dllexport) int meow = 0;
+
 int main( int argc, char *argv[] )
 {
     // We want to read our own PE executable.

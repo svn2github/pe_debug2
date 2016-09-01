@@ -2,13 +2,14 @@
 #include "peloader.h"
 
 #include <sdk/MemoryRaw.h>
+#include <sdk/MemoryUtils.h>
 
 #define NOMINMAX
 #include <Windows.h>
 
 PEFile::PEFile( void ) : resourceRoot( std::wstring() )
 {
-    return;
+    this->is64Bit = false;
 }
 
 PEFile::~PEFile( void )
@@ -145,6 +146,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     WORD chars = peHeader.FileHeader.Characteristics;
 
     peInfo.isExecutableImage = ( chars & IMAGE_FILE_EXECUTABLE_IMAGE ) != 0;
+    peInfo.hasLocalSymbols = ( chars & IMAGE_FILE_LOCAL_SYMS_STRIPPED ) == 0;
     peInfo.hasAggressiveTrim = ( chars & IMAGE_FILE_AGGRESIVE_WS_TRIM ) != 0;
     peInfo.largeAddressAware = ( chars & IMAGE_FILE_LARGE_ADDRESS_AWARE ) != 0;
     peInfo.bytesReversedLO = ( chars & IMAGE_FILE_BYTES_REVERSED_LO ) != 0;
@@ -457,6 +459,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             section.linenumbers = std::move( linenums );
         }
 
+        // Setup the meta-data.
+        section.isFinal = true;     // sections on-file are important to the program integrity.
+
         // We need to set our stream back on track.
         peStream->SeekNative( sectHeaderOff, SEEK_SET );
 
@@ -532,14 +537,6 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     PEExportDir::func fentry;
                     fentry.hasOrdinal = false;
                     fentry.ordinal = 0;
-
-                    if ( is64Bit )
-                    {
-                        const ULONGLONG *funcEntry = ( (const ULONGLONG*)addrPtr + n );
-
-                        fentry.address = *funcEntry;
-                    }
-                    else
                     {
                         const DWORD *funcEntry = ( (const DWORD*)addrPtr + n );
 
@@ -615,8 +612,19 @@ void PEFile::LoadFromDisk( CFile *peStream )
             {
                 const IMAGE_IMPORT_DESCRIPTOR& importInfo = importDescs[ n ];
 
-                if ( importInfo.Characteristics == 0 )
+                // TODO: allow secure bounded parsing of PE files, so we check for
+                // violations of PE rules and reject those files.
+
+                // By definition, an IMAGE_IMPORT_DESCRIPTOR with all entries zero
+                // is the end of the table.
+                if ( importInfo.Characteristics == 0 &&
+                     importInfo.TimeDateStamp == 0 &&
+                     importInfo.ForwarderChain == 0 &&
+                     importInfo.Name == 0 && 
+                     importInfo.FirstThunk == 0 )
+                {
                     break;
+                }
 
                 PEImportDesc impDesc;
 
@@ -634,6 +642,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                     while ( true )
                     {
+                        // TODO: in PE32+ images, we need to read 64bit numbers here.
+
                         const DWORD importNameRVA = *importNameArray++;
 
                         if ( !importNameRVA )
@@ -700,7 +710,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
             if ( !resRootDir )
                 throw std::exception( "invalid PE resource root" );
 
-            resourceRoot = LoadResourceDirectory( sections, std::wstring(), resRootDir );
+            resourceRoot = LoadResourceDirectory( resRootDir, sections, std::wstring(), resRootDir );
         }
     }
 
@@ -711,6 +721,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
         if ( rtDir.VirtualAddress != 0 )
         {
+            // TODO: apparently exception data is machine dependent, so we should
+            // deserialize this in a special way depending on machine_id.
+            // (currently we specialize on x86/AMD64)
+
             const IMAGE_RUNTIME_FUNCTION_ENTRY *rtFuncs = (const IMAGE_RUNTIME_FUNCTION_ENTRY*)GetPEDataPointer( sections, rtDir.VirtualAddress, rtDir.Size );
 
             if ( !rtFuncs )
@@ -1071,6 +1085,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 desc.attrib = delayLoad.Attributes.AllAttributes;
                 
                 // Read DLL name.
+                if ( delayLoad.DllNameRVA != 0 )
                 {
                     const char *dllNamePtr = (const char*)GetPEDataPointer( sections, delayLoad.DllNameRVA, 1 );
 
@@ -1112,8 +1127,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
     this->sections = std::move( sections );
     
     // Data directories.
-    this->exportDir = std::move( exportDir );
-    this->imports = std::move( imports );
+    this->exportDir = std::move( expInfo );
+    this->imports = std::move( impDescs );
     this->resourceRoot = std::move( resourceRoot );
     this->exceptRFs = std::move( exceptRFs );
     this->security = std::move( security );
@@ -1123,15 +1138,526 @@ void PEFile::LoadFromDisk( CFile *peStream )
     this->tlsInfo = std::move( tlsInfo );
     this->loadConfig = std::move( loadConfig );
     this->boundImports = std::move( boundImports );
-    this->iatThunkAll = std::move( iatThunkAll );
+    this->iatThunkAll = std::move( thunkIAT );
     this->delayLoads = std::move( delayLoads );
     this->clrInfo = std::move( clrInfo );
+
+    // Store some meta-data.
+    this->is64Bit = is64Bit;        // important for casting certain offsets.
 
     // Next thing we would need is writing support.
 }
 
+struct PEAllocFileAllocProxy
+{
+    template <typename sliceType>
+    AINLINE bool IsInAllocationRange( const sliceType& slice )
+    {
+        // TODO: add limit checking for 32bit allocatability here (if required).
+        return true;
+    }
+};
+
+// Writing helpers.
+typedef InfiniteCollisionlessBlockAllocator <DWORD> peFileAlloc;
+
+AINLINE void PEWrite( CFile *peStream, DWORD peOff, DWORD peSize, const void *dataPtr )
+{
+    // Seek to the right offset.
+    {
+        int seekSuccess = peStream->SeekNative( peOff, SEEK_SET );
+
+        if ( seekSuccess != 0 )
+        {
+            throw std::exception( "failed to seek to PE offset" );
+        }
+    }
+
+    size_t actualWriteCount = peStream->Write( dataPtr, 1, peSize );
+
+    if ( actualWriteCount != peSize )
+    {
+        throw std::exception( "failed to write PE data to file" );
+    }
+}
+
+AINLINE void writeContentAt( peFileAlloc& fileSpaceAlloc, CFile *peStream, peFileAlloc::block_t& allocBlock, DWORD peOff, DWORD peSize, const void *dataPtr )
+{
+    peFileAlloc::allocInfo alloc_data;
+
+    if ( fileSpaceAlloc.ObtainSpaceAt( peOff, peSize, alloc_data ) == false )
+    {
+        throw std::exception( "failed to write PE data" );
+    }
+    
+    fileSpaceAlloc.PutBlock( &allocBlock, alloc_data );
+
+    // Actually write things.
+    PEWrite( peStream, peOff, peSize, dataPtr );
+}
+
+AINLINE DWORD allocContentSpace( peFileAlloc& fileSpaceAlloc, peFileAlloc::block_t& allocBlock, DWORD peSize )
+{
+    peFileAlloc::allocInfo alloc_data;
+
+    if ( !fileSpaceAlloc.FindSpace( peSize, alloc_data, sizeof(DWORD) ) )
+    {
+        throw std::exception( "failed to find allocation space for PE data" );
+    }
+
+    fileSpaceAlloc.PutBlock( &allocBlock, alloc_data );
+
+    return alloc_data.slice.GetSliceStartPoint();
+}
+
+AINLINE void writeContent( peFileAlloc& fileSpaceAlloc, CFile *peStream, peFileAlloc::block_t& allocBlock, DWORD peSize, const void *dataPtr )
+{
+    DWORD dataPos = allocContentSpace( fileSpaceAlloc, allocBlock, peSize );
+
+    // Write things.
+    PEWrite( peStream, dataPos, peSize, dataPtr );
+}
+
+struct FileSpaceAllocMan
+{
+    inline FileSpaceAllocMan( void )
+    {
+        return;
+    }
+
+    inline ~FileSpaceAllocMan( void )
+    {
+        // Free all allocations that have not yet been freed (which is every alloc).
+        while ( !LIST_EMPTY( this->internalAlloc.blockList.root ) )
+        {
+            peFileAlloc::block_t *item = LIST_GETITEM( peFileAlloc::block_t, this->internalAlloc.blockList.root.next, node );
+
+            alloc_block_t *allocBlock = LIST_GETITEM( alloc_block_t, item, allocatorEntry );
+
+            // Remove us from registration.
+            this->internalAlloc.RemoveBlock( item );
+
+            // Delete us.
+            delete allocBlock;
+        }
+    }
+
+    inline DWORD AllocateAny( DWORD peSize )
+    {
+        peFileAlloc::allocInfo alloc_data;
+
+        if ( internalAlloc.FindSpace( peSize, alloc_data, sizeof( DWORD ) ) == false )
+        {
+            throw std::exception( "failed to find PE file space for allocation" );
+        }
+
+        alloc_block_t *alloc_savior = new alloc_block_t();
+        
+        internalAlloc.PutBlock( &alloc_savior->allocatorEntry, alloc_data );
+
+        return alloc_savior->allocatorEntry.slice.GetSliceStartPoint();
+    }
+
+    inline void AllocateAt( DWORD peOff, DWORD peSize )
+    {
+        peFileAlloc::allocInfo alloc_data;
+
+        if ( internalAlloc.ObtainSpaceAt( peOff, peSize, alloc_data ) == false )
+        {
+            throw std::exception( "failed to obtain PE file space at presignated offset" );
+        }
+
+        alloc_block_t *alloc_savior = new alloc_block_t();
+
+        internalAlloc.PutBlock( &alloc_savior->allocatorEntry, alloc_data );
+    }
+
+private:
+    peFileAlloc internalAlloc;
+
+    struct alloc_block_t
+    {
+        peFileAlloc::block_t allocatorEntry;
+    };
+};
+
+std::uint16_t PEFile::GetPENativeFileFlags( void )
+{
+    std::uint16_t chars = 0;
+
+    // Are relocations stripped?
+    if ( this->HasRelocationInfo() == false )
+    {
+        chars |= IMAGE_FILE_RELOCS_STRIPPED;
+    }
+
+    if ( this->pe_finfo.isExecutableImage )
+    {
+        chars |= IMAGE_FILE_EXECUTABLE_IMAGE;
+    }
+
+    if ( this->HasLinenumberInfo() == false )
+    {
+        chars |= IMAGE_FILE_LINE_NUMS_STRIPPED;
+    }
+
+    if ( !this->pe_finfo.hasLocalSymbols )
+    {
+        chars |= IMAGE_FILE_LOCAL_SYMS_STRIPPED;
+    }
+
+    if ( this->pe_finfo.hasAggressiveTrim )
+    {
+        chars |= IMAGE_FILE_AGGRESIVE_WS_TRIM;
+    }
+
+    if ( this->pe_finfo.largeAddressAware )
+    {
+        chars |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
+    }
+
+    if ( this->pe_finfo.bytesReversedLO )
+    {
+        chars |= IMAGE_FILE_BYTES_REVERSED_LO;
+    }
+
+    if ( this->is64Bit == false )
+    {
+        chars |= IMAGE_FILE_32BIT_MACHINE;
+    }
+
+    if ( this->HasDebugInfo() == false )
+    {
+        chars |= IMAGE_FILE_DEBUG_STRIPPED;
+    }
+
+    if ( this->pe_finfo.removableRunFromSwap )
+    {
+        chars |= IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP;
+    }
+
+    if ( this->pe_finfo.netRunFromSwap )
+    {
+        chars |= IMAGE_FILE_NET_RUN_FROM_SWAP;
+    }
+
+    if ( this->pe_finfo.isSystemFile )
+    {
+        chars |= IMAGE_FILE_SYSTEM;
+    }
+
+    if ( this->pe_finfo.isDLL )
+    {
+        chars |= IMAGE_FILE_DLL;
+    }
+
+    if ( this->pe_finfo.upSystemOnly )
+    {
+        chars |= IMAGE_FILE_UP_SYSTEM_ONLY;
+    }
+
+    if ( this->pe_finfo.bytesReversedHI )
+    {
+        chars |= IMAGE_FILE_BYTES_REVERSED_HI;
+    }
+
+    return chars;
+}
+
+std::uint16_t PEFile::GetPENativeDLLOptFlags( void )
+{
+    std::uint16_t chars = 0;
+
+    if ( this->peOptHeader.dll_supportsHighEntropy )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA;
+    }
+
+    if ( this->peOptHeader.dll_hasDynamicBase )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+    }
+
+    if ( this->peOptHeader.dll_forceIntegrity )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY;
+    }
+
+    if ( this->peOptHeader.dll_nxCompat )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+    }
+
+    if ( this->peOptHeader.dll_noIsolation )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
+    }
+
+    if ( this->peOptHeader.dll_noSEH )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_NO_SEH;
+    }
+
+    if ( this->peOptHeader.dll_noBind )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_NO_BIND;
+    }
+
+    if ( this->peOptHeader.dll_appContainer )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_APPCONTAINER;
+    }
+
+    if ( this->peOptHeader.dll_wdmDriver )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
+    }
+
+    if ( this->peOptHeader.dll_guardCF )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_GUARD_CF;
+    }
+
+    if ( this->peOptHeader.dll_termServAware )
+    {
+        chars |= IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
+    }
+
+    return chars;
+}
+
 void PEFile::WriteToStream( CFile *peStream )
 {
-    // TODO.
-    return;
+    // TODO: ensure that data has been properly committed to data sections which had to be.
+    // First allocate a new section that should serve as allocation target.
+    PESection newSect;
+    newSect.shortName = ".the_gta";
+
+    // We need to perform allocations onto directory structures for all meta-data.
+    FileSpaceAllocMan newMetaAlloc;
+    {
+        // We first have to allocate everything.
+
+        // * EXPORT DIRECTORY.
+        if ( this->exportDir.functions.empty() == false ||
+             this->exportDir.name.empty() == false ||
+             this->exportDir.base != 0 )
+        {
+            exportDirAlloc.theSection = &newSect;
+            exportDirAlloc.sectOffset = newMetaAlloc.AllocateAny( sizeof( IMAGE_EXPORT_DIRECTORY ) );
+
+            // Now the tables.
+        }
+    }
+
+    // TODO: properly write the PE file onto disk.
+    
+    FileSpaceAllocMan allocMan;
+
+    // Allocate and write the DOS header.
+    allocMan.AllocateAt( 0, sizeof( IMAGE_DOS_HEADER ) + this->dos_data.progData.size() );
+
+    IMAGE_DOS_HEADER dos_header;
+    dos_header.e_magic = 'ZM';
+    dos_header.e_cblp = this->dos_data.cblp;
+    dos_header.e_cp = this->dos_data.cp;
+    dos_header.e_crlc = this->dos_data.crlc;
+    dos_header.e_cparhdr = this->dos_data.cparhdr;
+    dos_header.e_minalloc = this->dos_data.minalloc;
+    dos_header.e_maxalloc = this->dos_data.maxalloc;
+    dos_header.e_ss = this->dos_data.ss;
+    dos_header.e_sp = this->dos_data.sp;
+    dos_header.e_csum = this->dos_data.csum;
+    dos_header.e_ip = this->dos_data.ip;
+    dos_header.e_cs = this->dos_data.cs;
+    dos_header.e_lfarlc = this->dos_data.lfarlc;
+    dos_header.e_ovno = this->dos_data.ovno;
+    memcpy( dos_header.e_res, this->dos_data.reserved1, sizeof( dos_header.e_res ) );
+    dos_header.e_oemid = this->dos_data.oemid;
+    dos_header.e_oeminfo = this->dos_data.oeminfo;
+    memcpy( dos_header.e_res2, this->dos_data.reserved2, sizeof( dos_header.e_res2 ) );
+
+    // Allocate and write PE information next.
+    // This has to be the PE header, the optional header (32bit or 64bit), the data directory info
+    // and the section info.
+    {
+        bool is64Bit = this->is64Bit;
+
+        // Determine the size of data to-be-written.
+        size_t peDataSize = sizeof( IMAGE_PE_HEADER );
+
+        // The optional header.
+        size_t peOptHeaderSize;
+
+        if ( is64Bit )
+        {
+            // TODO: if directory entries support turns dynamic we need to adjust this.
+            peOptHeaderSize = sizeof( IMAGE_OPTIONAL_HEADER64 );
+        }
+        else
+        {
+            peOptHeaderSize = sizeof( IMAGE_OPTIONAL_HEADER32 );
+        }
+        peDataSize += peOptHeaderSize;
+
+        // Add the size of section headers.
+        peDataSize += ( this->sections.size() * sizeof( IMAGE_SECTION_HEADER ) );
+
+        // TODO: there is "deprecated" information like lineinfo and native relocation
+        // info allowed. should we add support? this would mean adding even more size to
+        // peDataSize.
+
+        DWORD peDataPos = allocMan.AllocateAny( peDataSize );
+            
+        IMAGE_PE_HEADER pe_data;
+        pe_data.Signature = 'EP';
+        pe_data.FileHeader.Machine = this->pe_finfo.machine_id;
+        pe_data.FileHeader.NumberOfSections = this->sections.size();
+        pe_data.FileHeader.TimeDateStamp = this->pe_finfo.timeDateStamp;
+        pe_data.FileHeader.PointerToSymbolTable = NULL;     // not supported yet.
+        pe_data.FileHeader.NumberOfSymbols = 0;
+        pe_data.FileHeader.SizeOfOptionalHeader = ( is64Bit ? sizeof(IMAGE_OPTIONAL_HEADER64) : sizeof(IMAGE_OPTIONAL_HEADER32) );
+            
+        // Set up the flags.
+        pe_data.FileHeader.Characteristics = GetPENativeFileFlags();
+
+        // Time for the optional header.
+        // Once again a complicated construct that depends on data before and after.
+        // For that reason we allocate here and fill out the structure afterward.
+        DWORD peOptHeaderOffset = ( peDataPos + sizeof(IMAGE_PE_HEADER) );
+
+        // Write the data directories.
+        // Remember that we must not do allocations about the data directories here anymore.
+
+        // Write the section headers with all the meta-data surrounding them.
+
+        // Write PE data.
+        // First the header
+        PEWrite( peStream, peDataPos, sizeof( pe_data ), &pe_data );
+
+        // Now we need to write the optional header.
+        if ( is64Bit )
+        {
+            IMAGE_OPTIONAL_HEADER64 optHeader;
+            optHeader.Magic = 0x020B;   // todo: think about this, and 64bit support. (PE32+)
+            optHeader.MajorLinkerVersion = this->peOptHeader.majorLinkerVersion;
+            optHeader.MinorLinkerVersion = this->peOptHeader.minorLinkerVersion;
+            optHeader.SizeOfCode = this->peOptHeader.sizeOfCode;
+            optHeader.SizeOfInitializedData = this->peOptHeader.sizeOfInitializedData;
+            optHeader.SizeOfInitializedData = this->peOptHeader.sizeOfUninitializedData;
+            optHeader.AddressOfEntryPoint = this->peOptHeader.addressOfEntryPoint;
+            optHeader.BaseOfCode = this->peOptHeader.baseOfCode;
+            optHeader.ImageBase = this->peOptHeader.imageBase;
+            optHeader.SectionAlignment = this->peOptHeader.sectionAlignment;
+            optHeader.FileAlignment = this->peOptHeader.fileAlignment;
+            optHeader.MajorOperatingSystemVersion = this->peOptHeader.majorOSVersion;
+            optHeader.MinorOperatingSystemVersion = this->peOptHeader.minorOSVersion;
+            optHeader.MajorImageVersion = this->peOptHeader.majorImageVersion;
+            optHeader.MinorImageVersion = this->peOptHeader.minorImageVersion;
+            optHeader.MajorSubsystemVersion = this->peOptHeader.majorSubsysVersion;
+            optHeader.MinorSubsystemVersion = this->peOptHeader.minorSubsysVersion;
+            optHeader.Win32VersionValue = this->peOptHeader.win32VersionValue;
+            optHeader.SizeOfImage = 0;      // TODO: should be calculated here.
+            optHeader.SizeOfHeaders = ALIGN_SIZE( peDataSize, this->peOptHeader.fileAlignment );
+            optHeader.CheckSum = this->peOptHeader.checkSum;    // TODO: Windows Critical components need to update this.
+            optHeader.Subsystem = this->peOptHeader.subsys;
+            optHeader.DllCharacteristics = this->GetPENativeDLLOptFlags();
+            optHeader.SizeOfStackReserve = this->peOptHeader.sizeOfStackReserve;
+            optHeader.SizeOfStackCommit = this->peOptHeader.sizeOfStackCommit;
+            optHeader.SizeOfHeapReserve = this->peOptHeader.sizeOfHeapReserve;
+            optHeader.SizeOfHeapCommit = this->peOptHeader.sizeOfHeapCommit;
+            optHeader.LoaderFlags = this->peOptHeader.loaderFlags;
+            optHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;   // TODO: maybe make this dynamic.
+
+            // TODO: fill out directory entries.
+
+            PEWrite( peStream, peOptHeaderOffset, sizeof(optHeader), &optHeader );
+        }
+        else
+        {
+            IMAGE_OPTIONAL_HEADER32 optHeader;
+            optHeader.Magic = 0x020B;   // todo: think about this, and 64bit support. (PE32+)
+            optHeader.MajorLinkerVersion = this->peOptHeader.majorLinkerVersion;
+            optHeader.MinorLinkerVersion = this->peOptHeader.minorLinkerVersion;
+            optHeader.SizeOfCode = this->peOptHeader.sizeOfCode;
+            optHeader.SizeOfInitializedData = this->peOptHeader.sizeOfInitializedData;
+            optHeader.SizeOfInitializedData = this->peOptHeader.sizeOfUninitializedData;
+            optHeader.AddressOfEntryPoint = this->peOptHeader.addressOfEntryPoint;
+            optHeader.BaseOfCode = this->peOptHeader.baseOfCode;
+            optHeader.BaseOfData = this->peOptHeader.baseOfData;    // TODO: maybe this needs updating if we change from 32bit to 64bit.
+            optHeader.ImageBase = this->peOptHeader.imageBase;
+            optHeader.SectionAlignment = this->peOptHeader.sectionAlignment;
+            optHeader.FileAlignment = this->peOptHeader.fileAlignment;
+            optHeader.MajorOperatingSystemVersion = this->peOptHeader.majorOSVersion;
+            optHeader.MinorOperatingSystemVersion = this->peOptHeader.minorOSVersion;
+            optHeader.MajorImageVersion = this->peOptHeader.majorImageVersion;
+            optHeader.MinorImageVersion = this->peOptHeader.minorImageVersion;
+            optHeader.MajorSubsystemVersion = this->peOptHeader.majorSubsysVersion;
+            optHeader.MinorSubsystemVersion = this->peOptHeader.minorSubsysVersion;
+            optHeader.Win32VersionValue = this->peOptHeader.win32VersionValue;
+            optHeader.SizeOfImage = 0;      // TODO: should be calculated here.
+            optHeader.SizeOfHeaders = ALIGN_SIZE( peDataSize, this->peOptHeader.fileAlignment );
+            optHeader.CheckSum = this->peOptHeader.checkSum;    // TODO: Windows Critical components need to update this.
+            optHeader.Subsystem = this->peOptHeader.subsys;
+            optHeader.DllCharacteristics = this->GetPENativeDLLOptFlags();
+            optHeader.SizeOfStackReserve = this->peOptHeader.sizeOfStackReserve;
+            optHeader.SizeOfStackCommit = this->peOptHeader.sizeOfStackCommit;
+            optHeader.SizeOfHeapReserve = this->peOptHeader.sizeOfHeapReserve;
+            optHeader.SizeOfHeapCommit = this->peOptHeader.sizeOfHeapCommit;
+            optHeader.LoaderFlags = this->peOptHeader.loaderFlags;
+            optHeader.NumberOfRvaAndSizes = IMAGE_NUMBEROF_DIRECTORY_ENTRIES;   // TODO: maybe make this dynamic.
+
+            // TODO: fill out directory entries.
+
+            PEWrite( peStream, peOptHeaderOffset, sizeof(optHeader), &optHeader );
+        }
+
+        // TODO: update section headers and stuff with offsets of sections and other data.
+
+        // We need to know where PE data starts at.
+        dos_header.e_lfanew = (LONG)peDataPos;
+    }
+
+    peStream->SeekNative( 0, SEEK_SET );
+    peStream->Write( &dos_header, 1, sizeof( dos_header ) );
+    peStream->Write( this->dos_data.progData.data(), 1, this->dos_data.progData.size() );
+}
+
+bool PEFile::HasRelocationInfo( void ) const
+{
+    // Check any sections.
+    for ( const PESection& sect : this->sections )
+    {
+        if ( sect.relocations.size() != 0 )
+            return true;
+    }
+
+    // Check the relocation data.
+    if ( this->baseRelocs.size() != 0 )
+        return true;
+
+    // Nothing found.
+    return false;
+}
+
+bool PEFile::HasLinenumberInfo( void ) const
+{
+    // Check sections.
+    for ( const PESection& sect : this->sections )
+    {
+        if ( sect.linenumbers.size() != 0 )
+            return true;
+    }
+
+    // Has no embedded line number info.
+    return false;
+}
+
+bool PEFile::HasDebugInfo( void ) const
+{
+    // We check if we have debug directory data.
+    if ( this->debugInfo.addrOfRawData != 0 && this->debugInfo.sizeOfData != 0 )
+        return true;
+
+    return false;
 }

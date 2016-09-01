@@ -10,18 +10,13 @@ struct IMAGE_BASE_RELOC_TYPE_ITEM
     std::uint16_t offset : 12;
 };
 
-struct IMAGE_RESOURCE_SUB_DIRECTORY
-{
-    std::uint16_t NumberOfNamedEntries;
-    std::uint16_t NumberOfIdEntries;
-};
-
 struct IMAGE_RESOURCE_DIRECTORY {
     std::uint32_t Characteristics;
     std::uint32_t TimeDateStamp;
     std::uint16_t MajorVersion;
     std::uint16_t MinorVersion;
-    IMAGE_RESOURCE_SUB_DIRECTORY SubDirectory;
+    std::uint16_t NumberOfNamedEntries;
+    std::uint16_t NumberOfIdEntries;
 //  IMAGE_RESOURCE_DIRECTORY_ENTRY DirectoryEntries[];
 };
 
@@ -74,6 +69,10 @@ struct PEFile
     void LoadFromDisk( CFile *peStream );
     void WriteToStream( CFile *peStream );
 
+    bool HasRelocationInfo( void ) const;
+    bool HasLinenumberInfo( void ) const;
+    bool HasDebugInfo( void ) const;
+
 private:
     // DOS information.
     struct DOSStub
@@ -95,7 +94,7 @@ private:
         std::uint16_t oeminfo;
         std::uint16_t reserved2[10];
 
-        // Actual program data.
+        // Actual DOS program data.
         std::vector <unsigned char> progData;
     };
     DOSStub dos_data;
@@ -103,11 +102,29 @@ private:
     // Start of PE stuff.
     struct PEFileInfo
     {
+        inline PEFileInfo( void )
+        {
+            this->machine_id = 0;
+            this->timeDateStamp = 0;
+            this->isExecutableImage = false;
+            this->hasLocalSymbols = false;
+            this->hasAggressiveTrim = false;
+            this->largeAddressAware = false;
+            this->bytesReversedLO = false;
+            this->removableRunFromSwap = false;
+            this->netRunFromSwap = false;
+            this->isSystemFile = false;
+            this->isDLL = false;
+            this->upSystemOnly = false;
+            this->bytesReversedHI = false;
+        }
+
         std::uint16_t machine_id;
         std::uint32_t timeDateStamp;
 
         // More meta information.
         bool isExecutableImage;
+        bool hasLocalSymbols;
         bool hasAggressiveTrim;
         bool largeAddressAware;
         bool bytesReversedLO;
@@ -195,6 +212,37 @@ private:
 
     struct PESection
     {
+        inline PESection( void )
+        {
+            this->virtualSize = 0;
+            this->virtualAddr = 0;
+            this->sect_hasNoPadding = true;
+            this->sect_containsCode = false;
+            this->sect_containsInitData = false;
+            this->sect_containsUninitData = false;
+            this->sect_link_other = false;
+            this->sect_link_info = false;
+            this->sect_link_remove = false;
+            this->sect_link_comdat = false;
+            this->sect_noDeferSpecExcepts = false;
+            this->sect_gprel = false;
+            this->sect_mem_farData = false;
+            this->sect_mem_purgeable = false;
+            this->sect_mem_16bit = false;
+            this->sect_mem_locked = false;
+            this->sect_mem_preload = false;
+            this->sect_alignment = eAlignment::BYTES_1;
+            this->sect_link_nreloc_ovfl = false;
+            this->sect_mem_discardable = false;
+            this->sect_mem_not_cached = false;
+            this->sect_mem_not_paged = false;
+            this->sect_mem_shared = false;
+            this->sect_mem_execute = false;
+            this->sect_mem_read = true;
+            this->sect_mem_write = false;
+            this->isFinal = false;
+        }
+
         std::string shortName;
         union
         {
@@ -251,9 +299,28 @@ private:
         bool sect_mem_execute;
         bool sect_mem_read;
         bool sect_mem_write;
+
+        // Meta-data that we manage.
+        // * Allocation status.
+        bool isFinal;
     };
 
     std::vector <PESection> sections;
+
+    struct PESectionAllocation
+    {
+        // TODO: once we begin differing between PE file version we have to be
+        // careful about maintaining allocations.
+
+        inline PESectionAllocation( void )
+        {
+            this->theSection = NULL;
+            this->sectOffset = 0;
+        }
+
+        PESection *theSection;
+        DWORD sectOffset;
+    };
 
     // Data directory business.
     struct PEExportDir
@@ -271,7 +338,7 @@ private:
         std::uint32_t timeDateStamp;
         std::uint16_t majorVersion;
         std::uint16_t minorVersion;
-        std::string name;
+        std::string name;   // NOTE: name table is serialized lexigraphically.
         std::uint32_t base;
 
         struct func
@@ -382,7 +449,7 @@ private:
             this->secDataSize = 0;
         }
 
-        std::uint32_t secDataOffset;
+        std::uint32_t secDataOffset;    // this is file offset NOT RVA
         std::uint32_t secDataSize;
     };
     PESecurity security;
@@ -566,6 +633,9 @@ private:
     };
     PECommonLanguageRuntimeInfo clrInfo;
 
+    // Meta-data.
+    bool is64Bit;
+
     // Function to get a data pointer of data directories.
     inline static void* GetPEDataPointer( std::vector <PESection>& sections, std::uint64_t virtAddr, std::uint64_t virtSize )
     {
@@ -607,8 +677,18 @@ private:
         return NULL;
     }
 
-    inline static void LoadResourceSubDirectory( std::vector <PESection>& sections, PEResourceDir& curDir, const PEStructures::IMAGE_RESOURCE_SUB_DIRECTORY *serResDir )
+    inline static PEResourceDir LoadResourceDirectory( const void *resRootDir, std::vector <PESection>& sections, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY *serResDir )
     {
+        using namespace PEStructures;
+
+        PEResourceDir curDir( std::move( nameOfDir ) );
+
+        // Store general details.
+        curDir.characteristics = serResDir->Characteristics;
+        curDir.timeDateStamp = serResDir->TimeDateStamp;
+        curDir.majorVersion = serResDir->MajorVersion;
+        curDir.minorVersion = serResDir->MinorVersion;
+
         // Read sub entries.
         // Those are planted directly after the directory.
         std::uint16_t numNamedEntries = serResDir->NumberOfNamedEntries;
@@ -624,15 +704,13 @@ private:
             if ( entry.DataIsDirectory )
             {
                 // Get the sub-directory structure.
-                const PEStructures::IMAGE_RESOURCE_SUB_DIRECTORY *subDirData =
-                    (const PEStructures::IMAGE_RESOURCE_SUB_DIRECTORY*)( (const char*)&entry + entry.OffsetToDirectory );
+                const PEStructures::IMAGE_RESOURCE_DIRECTORY *subDirData =
+                    (const PEStructures::IMAGE_RESOURCE_DIRECTORY*)( (const char*)resRootDir + entry.OffsetToDirectory );
 
                 if ( !subDirData )
                     throw std::exception( "invalid PE resource directory data" );
 
-                PEResourceDir subDir( std::move( nameOfItem ) );
-
-                LoadResourceSubDirectory( sections, subDir, subDirData );
+                PEResourceDir subDir = LoadResourceDirectory( resRootDir, sections, std::move( nameOfItem ), subDirData );
 
                 PEResourceDir *subDirItem = new PEResourceDir( std::move( subDir ) );
 
@@ -642,7 +720,7 @@ private:
             {
                 // Read the data leaf.
                 const PEStructures::IMAGE_RESOURCE_DATA_ENTRY *itemData =
-                    (const PEStructures::IMAGE_RESOURCE_DATA_ENTRY*)( (const char*)&entry + entry.OffsetToData );
+                    (const PEStructures::IMAGE_RESOURCE_DATA_ENTRY*)( (const char*)resRootDir + entry.OffsetToData );
 
                 if ( !itemData )
                     throw std::exception( "invalid PE resource item data" );
@@ -673,7 +751,7 @@ private:
             std::wstring nameOfItem;
             {
                 const PEStructures::IMAGE_RESOURCE_DIR_STRING_U *strEntry =
-                    (const PEStructures::IMAGE_RESOURCE_DIR_STRING_U*)( (const char*)serResDir + namedEntry.NameOffset );
+                    (const PEStructures::IMAGE_RESOURCE_DIR_STRING_U*)( (const char*)resRootDir + namedEntry.NameOffset );
 
                 if ( !strEntry )
                     throw std::exception( "invalid PE resource directory string" );
@@ -706,26 +784,14 @@ private:
             // Store it.
             curDir.children.push_back( resItem );
         }
-    }
 
-    // Loading of PE resource directories into managed memory.
-    inline static PEResourceDir LoadResourceDirectory( std::vector <PESection>& sections, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY *serResDir )
-    {
-        using namespace PEStructures;
-
-        PEResourceDir curDir( std::move( nameOfDir ) );
-
-        // Store general details.
-        curDir.characteristics = serResDir->Characteristics;
-        curDir.timeDateStamp = serResDir->TimeDateStamp;
-        curDir.majorVersion = serResDir->MajorVersion;
-        curDir.minorVersion = serResDir->MinorVersion;
-        
-        LoadResourceSubDirectory( sections, curDir, &serResDir->SubDirectory );
-
-        // We are done. Return ourselves.
         return curDir;
     }
+
+    // Helper functions to off-load the duty work from the main
+    // serialization function.
+    std::uint16_t GetPENativeFileFlags( void );
+    std::uint16_t GetPENativeDLLOptFlags( void );
 };
 
 #endif //_PELOADER_CORE_
