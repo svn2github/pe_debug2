@@ -1443,8 +1443,10 @@ void PEFile::WriteToStream( CFile *peStream )
              this->exportDir.name.empty() == false ||
              this->exportDir.base != 0 )
         {
-            exportDirAlloc.theSection = &newSect;
-            exportDirAlloc.sectOffset = newMetaAlloc.AllocateAny( sizeof( IMAGE_EXPORT_DIRECTORY ) );
+            //todo.
+
+            //exportDirAlloc.theSection = &newSect;
+            //exportDirAlloc.sectOffset = newMetaAlloc.AllocateAny( sizeof( IMAGE_EXPORT_DIRECTORY ) );
 
             // Now the tables.
         }

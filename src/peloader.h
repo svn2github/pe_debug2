@@ -1,6 +1,8 @@
 #ifndef _PELOADER_CORE_
 #define _PELOADER_CORE_
 
+#include <sdk/rwlist.hpp>
+
 namespace PEStructures
 {
 
@@ -307,8 +309,6 @@ private:
 
     std::vector <PESection> sections;
 
-    // TODO: create 
-
     struct PESectionAllocation
     {
         // TODO: once we begin differing between PE file version we have to be
@@ -321,7 +321,11 @@ private:
         }
 
         PESection *theSection;
-        DWORD sectOffset;
+        std::uint32_t sectOffset;
+
+        // Every allocation can ONLY exist on ONE section.
+
+        RwListEntry <PESectionAllocation> sectionNode;
     };
 
     // Data directory business.
@@ -352,6 +356,8 @@ private:
         };
 
         std::vector <func> functions;
+        
+        PESectionAllocation allocEntry;
     };
     PEExportDir exportDir;
 
@@ -372,6 +378,8 @@ private:
         std::uint32_t firstThunkOffset;
     };
     std::vector <PEImportDesc> imports;
+
+    PESectionAllocation importsAllocEntry;
 
     // Resource information.
     struct PEResourceItem
