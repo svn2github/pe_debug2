@@ -2,6 +2,7 @@
 #define _PELOADER_CORE_
 
 #include <sdk/rwlist.hpp>
+#include <sdk/MemoryUtils.h>
 
 namespace PEStructures
 {
@@ -214,36 +215,10 @@ private:
 
     struct PESection
     {
-        inline PESection( void )
-        {
-            this->virtualSize = 0;
-            this->virtualAddr = 0;
-            this->sect_hasNoPadding = true;
-            this->sect_containsCode = false;
-            this->sect_containsInitData = false;
-            this->sect_containsUninitData = false;
-            this->sect_link_other = false;
-            this->sect_link_info = false;
-            this->sect_link_remove = false;
-            this->sect_link_comdat = false;
-            this->sect_noDeferSpecExcepts = false;
-            this->sect_gprel = false;
-            this->sect_mem_farData = false;
-            this->sect_mem_purgeable = false;
-            this->sect_mem_16bit = false;
-            this->sect_mem_locked = false;
-            this->sect_mem_preload = false;
-            this->sect_alignment = eAlignment::BYTES_1;
-            this->sect_link_nreloc_ovfl = false;
-            this->sect_mem_discardable = false;
-            this->sect_mem_not_cached = false;
-            this->sect_mem_not_paged = false;
-            this->sect_mem_shared = false;
-            this->sect_mem_execute = false;
-            this->sect_mem_read = true;
-            this->sect_mem_write = false;
-            this->isFinal = false;
-        }
+        PESection( void );
+        PESection( PESection&& right ) = default;
+        PESection( const PESection& right ) = delete;
+        ~PESection( void );
 
         std::string shortName;
         union
@@ -276,6 +251,7 @@ private:
         
         enum class eAlignment
         {
+            BYTES_UNSPECIFIED,
             BYTES_1,
             BYTES_2,
             BYTES_4,
@@ -305,28 +281,97 @@ private:
         // Meta-data that we manage.
         // * Allocation status.
         bool isFinal;
+
+        typedef InfiniteCollisionlessBlockAllocator <std::uint32_t> sectionSpaceAlloc_t;
+
+        struct PESectionAllocation
+        {
+            // TODO: once we begin differing between PE file version we have to be
+            // careful about maintaining allocations.
+
+            inline PESectionAllocation( void )
+            {
+                this->theSection = NULL;
+                this->sectOffset = 0;
+                this->dataSize = 0;
+            }
+
+            inline PESectionAllocation( PESectionAllocation&& right )
+            {
+                PESection *newSectionHost = right.theSection;
+
+                this->theSection = newSectionHost;
+                this->sectOffset = right.sectOffset;
+                this->dataSize = right.dataSize;
+
+                if ( newSectionHost )
+                {
+                    // If the section is final, we do not exist
+                    // in the list, because final sections do not have to
+                    // know about existing chunks.
+                    // Keeping a list would over-complicate things.
+                    if ( newSectionHost->isFinal == false )
+                    {
+                        this->sectionBlock.moveFrom( std::move( right.sectionBlock ) );
+                    }
+                }
+
+                // Invalidate the old section.
+                right.theSection = NULL;
+            }
+
+        private:
+            inline void removeFromSection( void )
+            {
+                // If we are allocated on a section, we want to remove ourselves.
+                if ( PESection *sect = this->theSection )
+                {
+                    if ( sect->isFinal == false )
+                    {
+                        // Block remove.
+                        sect->dataAlloc.RemoveBlock( &this->sectionBlock );
+                    }
+
+                    this->theSection = NULL;
+                }
+            }
+
+        public:
+            inline void operator = ( PESectionAllocation&& right )
+            {
+                // Actually the same as the destructor does.
+                this->removeFromSection();
+
+                new (this) PESectionAllocation( std::move( right ) );
+            }
+
+            inline ~PESectionAllocation( void )
+            {
+                this->removeFromSection();
+            }
+
+            PESection *theSection;
+            std::uint32_t sectOffset;
+            std::uint32_t dataSize;     // if 0 then true size not important/unknown.
+
+            // Every allocation can ONLY exist on ONE section.
+
+            sectionSpaceAlloc_t::block_t sectionBlock;
+        };
+
+        // Allocation methods.
+        std::uint32_t Allocate( PESectionAllocation& blockMeta, std::uint32_t allocSize, std::uint32_t alignment = sizeof(std::uint32_t) );
+        void SetPlacedMemory( PESectionAllocation& blockMeta, std::uint32_t allocOff, std::uint32_t allocSize = 0u );
+
+        std::uint32_t GetPENativeFlags( void ) const;
+
+        // If we are final, we DO NOT keep a list of allocations.
+        // Otherwise we keep a collisionless struct of allocations we made.
+        sectionSpaceAlloc_t dataAlloc;
     };
+    using PESectionAllocation = PESection::PESectionAllocation;
 
     std::vector <PESection> sections;
-
-    struct PESectionAllocation
-    {
-        // TODO: once we begin differing between PE file version we have to be
-        // careful about maintaining allocations.
-
-        inline PESectionAllocation( void )
-        {
-            this->theSection = NULL;
-            this->sectOffset = 0;
-        }
-
-        PESection *theSection;
-        std::uint32_t sectOffset;
-
-        // Every allocation can ONLY exist on ONE section.
-
-        RwListEntry <PESectionAllocation> sectionNode;
-    };
 
     // Data directory business.
     struct PEExportDir
@@ -347,16 +392,25 @@ private:
         std::string name;   // NOTE: name table is serialized lexigraphically.
         std::uint32_t base;
 
+        PESectionAllocation nameAllocEntry;
+
         struct func
         {
-            std::uint64_t address;
+            std::uint32_t exportOff;
+            std::string forwarder;
+            bool isForwarder;
+            PESectionAllocation forwAllocEntry;
             std::string name;
+            PESectionAllocation nameAllocEntry;
             bool hasOrdinal;
             std::uint32_t ordinal;
         };
-
         std::vector <func> functions;
-        
+
+        PESectionAllocation funcAddressAllocEntry;
+        PESectionAllocation funcNamesAllocEntry;
+        PESectionAllocation funcOrdinalsAllocEntry;
+
         PESectionAllocation allocEntry;
     };
     PEExportDir exportDir;
@@ -366,13 +420,18 @@ private:
     {
         struct importFunc
         {
-            std::uint32_t ordinal_hint;
+            std::uint64_t ordinal_hint;
             std::string name;
             bool isOrdinalImport;
+
+            PESectionAllocation nameAllocEntry;
         };
         std::vector <importFunc> funcs;
         std::string DLLName;
 
+        PESectionAllocation impNameArrayAllocEntry;
+        PESectionAllocation DLLName_allocEntry;
+        
         // Meta-information we must keep because it is baked
         // by compilers.
         std::uint32_t firstThunkOffset;
@@ -442,6 +501,8 @@ private:
         std::vector <PEResourceItem*> children;
     };
     PEResourceDir resourceRoot;
+    
+    PESectionAllocation resAllocEntry;
 
     struct PERuntimeFunction
     {
@@ -450,6 +511,8 @@ private:
         std::uint32_t unwindInfo;
     };
     std::vector <PERuntimeFunction> exceptRFs;
+
+    PESectionAllocation exceptAllocEntry;
 
     struct PESecurity
     {
@@ -477,6 +540,8 @@ private:
     };
     std::vector <PEBaseReloc> baseRelocs;
 
+    PESectionAllocation baseRelocAllocEntry;
+
     struct PEDebug
     {
         inline PEDebug( void )
@@ -498,6 +563,8 @@ private:
         std::uint32_t sizeOfData;
         std::uint32_t addrOfRawData;
         std::uint32_t ptrToRawData;
+
+        PESectionAllocation allocEntry;
     };
     PEDebug debugInfo;
 
@@ -530,6 +597,8 @@ private:
         std::uint64_t addressOfCallbacks;
         std::uint32_t sizeOfZeroFill;
         std::uint32_t characteristics;
+
+        PESectionAllocation allocEntry;
     };
     PEThreadLocalStorage tlsInfo;
 
@@ -586,6 +655,8 @@ private:
         std::uint64_t guardCFFunctionTable;
         std::uint64_t guardCFFunctionCount;
         std::uint32_t guardFlags;
+
+        PESectionAllocation allocEntry;
     };
     PELoadConfig loadConfig;
 
@@ -604,6 +675,8 @@ private:
     };
     std::vector <PEBoundImports> boundImports;
 
+    PESectionAllocation boundImportsAllocEntry;
+
     struct PEThunkIATStore
     {
         inline PEThunkIATStore( void )
@@ -621,6 +694,7 @@ private:
     {
         std::uint32_t attrib;
         std::string DLLName;
+        PESectionAllocation DLLName_allocEntry;
         std::uint32_t DLLHandleOffset;
         std::uint32_t IATOffset;
         std::uint32_t importNameTableOffset;
@@ -629,6 +703,8 @@ private:
         std::uint32_t timeDateStamp;
     };
     std::vector <PEDelayLoadDesc> delayLoads;
+
+    PESectionAllocation delayLoadsAllocEntry;
 
     struct PECommonLanguageRuntimeInfo
     {
@@ -647,7 +723,11 @@ private:
     bool is64Bit;
 
     // Function to get a data pointer of data directories.
-    inline static void* GetPEDataPointer( std::vector <PESection>& sections, std::uint64_t virtAddr, std::uint64_t virtSize )
+    inline static void* GetPEDataPointer(
+        std::vector <PESection>& sections,
+        std::uint64_t virtAddr, std::uint64_t virtSize,
+        PESection **allocSectOut = NULL
+    )
     {
         typedef sliceOfData <std::uint64_t> memSlice_t;
 
@@ -678,6 +758,11 @@ private:
             if ( intResult == memSlice_t::INTERSECT_INSIDE ||
                  intResult == memSlice_t::INTERSECT_EQUAL )
             {
+                if ( allocSectOut )
+                {
+                    *allocSectOut = &sect;
+                }
+
                 // OK. We return a pointer into this section.
                 return ( sect.rawdata.data() + ( virtAddr - sectAddr ) );
             }
@@ -802,6 +887,8 @@ private:
     // serialization function.
     std::uint16_t GetPENativeFileFlags( void );
     std::uint16_t GetPENativeDLLOptFlags( void );
+
+    void CommitDataDirectories( void );
 };
 
 #endif //_PELOADER_CORE_

@@ -27,7 +27,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        std::unique_ptr <CFile> filePtr( fileRoot->Open( "pe_debug_d.exe", "rb" ) );
+        std::unique_ptr <CFile> filePtr( fileRoot->Open( "gta_sa.exe", "rb" ) );
 
         if ( filePtr )
         {
