@@ -3,6 +3,7 @@
 
 #include <sdk/rwlist.hpp>
 #include <sdk/MemoryUtils.h>
+#include <sdk/MemoryUtils.stream.h>
 
 namespace PEStructures
 {
@@ -216,9 +217,12 @@ private:
     struct PESection
     {
         PESection( void );
-        PESection( PESection&& right ) = default;
         PESection( const PESection& right ) = delete;
+        PESection( PESection&& right ) = default;
         ~PESection( void );
+
+        inline PESection& operator =( const PESection& right ) = delete;
+        inline PESection& operator =( PESection&& right ) = default;
 
         std::string shortName;
         union
@@ -228,7 +232,6 @@ private:
         };
         std::uint32_t virtualAddr;
         
-        std::vector <unsigned char> rawdata;
         std::vector <PERelocation> relocations;
         std::vector <PELinenumber> linenumbers;
 
@@ -350,6 +353,9 @@ private:
                 this->removeFromSection();
             }
 
+            // Data-access methods for this allocation
+            void WriteToSection( const void *dataPtr, std::uint32_t dataSize, std::int32_t dataOff = 0 );
+
             PESection *theSection;
             std::uint32_t sectOffset;
             std::uint32_t dataSize;     // if 0 then true size not important/unknown.
@@ -368,6 +374,16 @@ private:
         // If we are final, we DO NOT keep a list of allocations.
         // Otherwise we keep a collisionless struct of allocations we made.
         sectionSpaceAlloc_t dataAlloc;
+
+private:
+        // Writing and possibly reading from this data section
+        // should be done through this memory stream.
+        BasicMemStream::basicMemStreamAllocMan <std::int32_t> streamAllocMan;
+
+public:
+        typedef BasicMemStream::basicMemoryBufferStream <std::int32_t> memStream;
+
+        memStream stream;
     };
     using PESectionAllocation = PESection::PESectionAllocation;
 
@@ -382,7 +398,7 @@ private:
             this->timeDateStamp = 0;
             this->majorVersion = 0;
             this->minorVersion = 0;
-            this->base = 0;
+            this->ordinalBase = 0;
         }
 
         std::uint32_t chars;
@@ -390,20 +406,24 @@ private:
         std::uint16_t majorVersion;
         std::uint16_t minorVersion;
         std::string name;   // NOTE: name table is serialized lexigraphically.
-        std::uint32_t base;
+        std::uint32_t ordinalBase;
 
         PESectionAllocation nameAllocEntry;
 
         struct func
         {
+            // Mandatory valid fields for each function.
             std::uint32_t exportOff;
             std::string forwarder;
             bool isForwarder;
             PESectionAllocation forwAllocEntry;
-            std::string name;
+            
+            // Optional fields.
+            std::string name;       // is valid if not empty
+            bool isNamed;
             PESectionAllocation nameAllocEntry;
-            bool hasOrdinal;
-            std::uint32_t ordinal;
+            // definition of ordinal: index into function array.
+            // thus it is given implicitly.
         };
         std::vector <func> functions;
 
@@ -723,7 +743,7 @@ private:
     bool is64Bit;
 
     // Function to get a data pointer of data directories.
-    inline static void* GetPEDataPointer(
+    inline static const void* GetPEDataPointer(
         std::vector <PESection>& sections,
         std::uint64_t virtAddr, std::uint64_t virtSize,
         PESection **allocSectOut = NULL
@@ -738,16 +758,9 @@ private:
         {
             // Create a memory slice of this section.
             std::uint64_t sectAddr, sectSize;
-
-            if ( sect.virtualSize != 0 )
             {
                 sectAddr = sect.virtualAddr;
-                sectSize = sect.virtualSize;
-            }
-            else
-            {
-                sectAddr = sect.physAddr;
-                sectSize = sect.rawdata.size();
+                sectSize = sect.stream.Size();
             }
 
             memSlice_t sectRegion( sectAddr, sectSize );
@@ -764,7 +777,7 @@ private:
                 }
 
                 // OK. We return a pointer into this section.
-                return ( sect.rawdata.data() + ( virtAddr - sectAddr ) );
+                return ( (const char*)sect.stream.Data() + ( virtAddr - sectAddr ) );
             }
         }
 
@@ -887,6 +900,11 @@ private:
     // serialization function.
     std::uint16_t GetPENativeFileFlags( void );
     std::uint16_t GetPENativeDLLOptFlags( void );
+
+    // Generic section management API.
+    PESection* FindFirstSectionByName( const char *name );
+    PESection* FindFirstAllocatableSection( void );
+    bool RemoveSection( PESection *section );
 
     void CommitDataDirectories( void );
 };

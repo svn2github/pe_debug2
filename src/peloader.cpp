@@ -1,6 +1,9 @@
 #include "StdInc.h"
 #include "peloader.h"
 
+#include <unordered_map>
+#include <set>
+
 #include <sdk/MemoryRaw.h>
 #include <sdk/MemoryUtils.h>
 
@@ -395,14 +398,12 @@ void PEFile::LoadFromDisk( CFile *peStream )
         {
             peStream->SeekNative( sectHeader.PointerToRawData, SEEK_SET );
 
-            std::vector <unsigned char> rawdata( sectHeader.SizeOfRawData );
+            section.stream.Truncate( (std::uint32_t)sectHeader.SizeOfRawData );
 
-            size_t actualReadCount = peStream->Read( rawdata.data(), 1, sectHeader.SizeOfRawData );
+            size_t actualReadCount = peStream->Read( section.stream.Data(), 1, sectHeader.SizeOfRawData );
 
             if ( actualReadCount != sectHeader.SizeOfRawData )
                 throw std::exception( "failed to read PE section raw data" );
-
-            section.rawdata = std::move( rawdata );
         }
 
         // Read relocation information.
@@ -498,7 +499,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             expInfo.timeDateStamp = expEntry.TimeDateStamp;
             expInfo.majorVersion = expEntry.MajorVersion;
             expInfo.minorVersion = expEntry.MinorVersion;
-            expInfo.base = expEntry.Base;
+            expInfo.ordinalBase = expEntry.Base;
+
+            size_t ordinalBase = ( expInfo.ordinalBase - 1 );
 
             // Read the name.
             PESection *sectOfName;
@@ -548,8 +551,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 for ( DWORD n = 0; n < expEntry.NumberOfFunctions; n++ )
                 {
                     PEExportDir::func fentry;
-                    fentry.hasOrdinal = false;
-                    fentry.ordinal = 0;
+                    fentry.isNamed = false; // by default no export is named.
 
                     bool isForwarder;
                     {
@@ -592,8 +594,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 }
 
                 // Read names and ordinals, if available.
-                if ( expEntry.AddressOfNames != 0 )
+                if ( expEntry.AddressOfNames != 0 && expEntry.AddressOfNameOrdinals != 0 )
                 {
+                    // Establish name ptr array.
                     PESection *addrNamesSect;
 
                     const DWORD *namePtrs = (const DWORD*)GetPEDataPointer( sections, expEntry.AddressOfNames, expEntry.NumberOfNames * sizeof(DWORD), &addrNamesSect );
@@ -603,8 +606,29 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                     addrNamesSect->SetPlacedMemory( expInfo.funcNamesAllocEntry, expEntry.AddressOfNames );
 
-                    for ( DWORD n = 0; n < expEntry.NumberOfNames && n < expEntry.NumberOfFunctions; n++ )
+                    // Establish ordinal mapping array.
+                    PESection *addrNameOrdSect;
+
+                    const WORD *ordPtr = (const WORD*)GetPEDataPointer( sections, expEntry.AddressOfNameOrdinals, expEntry.NumberOfNames * sizeof(WORD), &addrNameOrdSect );
+
+                    if ( !ordPtr )
+                        throw std::exception( "failed to get PE export directory function ordinals" );
+
+                    addrNameOrdSect->SetPlacedMemory( expInfo.funcOrdinalsAllocEntry, expEntry.AddressOfNameOrdinals );
+
+                    // Map names to functions.
+                    for ( DWORD n = 0; n < expEntry.NumberOfNames; n++ )
                     {
+                        // Get the index to map the function name to (== ordinal).
+                        size_t mapIndex = ( ordPtr[ n ] - ordinalBase );
+
+                        if ( mapIndex >= funcs.size() )
+                        {
+                            // Invalid mapping.
+                            throw std::exception( "PE binary has broken export mapping (ordinal out of bounds)" );
+                        }
+
+                        // Get the name we should map to.
                         PESection *realNamePtrSect;
 
                         DWORD namePtr = namePtrs[ n ];
@@ -615,31 +639,25 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         if ( !realNamePtr )
                             throw std::exception( "failed to get PE export directory function name ptr" );
 
-                        PEExportDir::func& fentry = funcs[ n ];
+                        if ( *realNamePtr == '\0' )
+                        {
+                            // Kind of invalid.
+                            throw std::exception( "invalid PE export name: empty string" );
+                        }
+
+                        PEExportDir::func& fentry = funcs[ mapIndex ];
+
+                        // Check for ambiguous name mappings.
+                        // TODO: this is actually allowed and is called "alias"; pretty evil.
+                        if ( fentry.isNamed )
+                        {
+                            throw std::exception( "ambiguous PE export name mapping" );
+                        }
 
                         fentry.name = realNamePtr;
+                        fentry.isNamed = true;  // yes, we have a valid name!
 
                         realNamePtrSect->SetPlacedMemory( fentry.nameAllocEntry, namePtr );
-                    }
-                }
-
-                if ( expEntry.AddressOfNameOrdinals != 0 )
-                {
-                    PESection *addrNameOrdSect;
-
-                    const WORD *ordPtr = (const WORD*)GetPEDataPointer( sections, expEntry.AddressOfNameOrdinals, expEntry.NumberOfNames * sizeof(WORD), &addrNameOrdSect );
-
-                    if ( !ordPtr )
-                        throw std::exception( "failed to get PE export directory function ordinals" );
-
-                    addrNameOrdSect->SetPlacedMemory( expInfo.funcOrdinalsAllocEntry, expEntry.AddressOfNameOrdinals );
-
-                    for ( DWORD n = 0; n < expEntry.NumberOfNames && n < expEntry.NumberOfFunctions; n++ )
-                    {
-                        PEExportDir::func& fentry = funcs[ n ];
-
-                        fentry.ordinal = ordPtr[ n ];
-                        fentry.hasOrdinal = true;
                     }
                 }
 
@@ -1569,7 +1587,7 @@ std::uint16_t PEFile::GetPENativeDLLOptFlags( void )
     return chars;
 }
 
-PEFile::PESection::PESection( void )
+PEFile::PESection::PESection( void ) : stream( NULL, 0, streamAllocMan )
 {
     this->virtualSize = 0;
     this->virtualAddr = 0;
@@ -1633,6 +1651,19 @@ std::uint32_t PEFile::PESection::Allocate( PESectionAllocation& allocBlock, std:
     allocBlock.dataSize = allocSize;
 
     return alloc_off;
+}
+
+void PEFile::PESectionAllocation::WriteToSection( const void *dataPtr, std::uint32_t dataSize, std::int32_t dataOff )
+{
+    PESection *allocSect = this->theSection;
+
+    if ( !allocSect )
+    {
+        throw std::exception( "invalid write section call on unallocated construct" );
+    }
+
+    allocSect->stream.Seek( dataOff );
+    allocSect->stream.Write( dataPtr, dataSize );
 }
 
 void PEFile::PESection::SetPlacedMemory( PESectionAllocation& blockMeta, std::uint32_t allocOff, std::uint32_t allocSize )
@@ -1794,22 +1825,162 @@ void PEFile::CommitDataDirectories( void )
     return;
 }
 
+PEFile::PESection* PEFile::FindFirstSectionByName( const char *name )
+{
+    for ( PESection& sect : sections )
+    {
+        if ( sect.shortName == name )
+            return &sect;
+    }
+
+    return NULL;
+}
+
+PEFile::PESection* PEFile::FindFirstAllocatableSection( void )
+{
+    for ( PESection& sect : sections )
+    {
+        if ( sect.isFinal == false )
+            return &sect;
+    }
+
+    return NULL;
+}
+
+bool PEFile::RemoveSection( PESection *section )
+{
+    for ( auto sectIter = this->sections.begin(); sectIter != this->sections.end(); sectIter++ )
+    {
+        PESection& sect = *sectIter;
+
+        if ( &sect == section )
+        {
+            // After a section has been erased, it must not be used anymore.
+
+            sections.erase( sectIter );
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void PEFile::WriteToStream( CFile *peStream )
 {
     // TODO: ensure that data has been properly committed to data sections which had to be.
     // First allocate a new section that should serve as allocation target.
-    PESection newSect;
-    newSect.shortName = ".the_gta";
+    PESection rdonlySect;
+    rdonlySect.shortName = ".the_gta";
+
+    PESection dataSect;
+    dataSect.shortName = ".quiret";
 
     // We need to perform allocations onto directory structures for all meta-data.
-    FileSpaceAllocMan newMetaAlloc;
     {
         // We first have to allocate everything.
 
         // * EXPORT DIRECTORY.
-        
-    }
+        const PEExportDir& expDir = this->exportDir;
 
+        if ( expDir.chars != 0 || expDir.name.empty() == false || expDir.functions.empty() == false )
+        {
+            // Allocate each directory with its own allocator.
+            struct expfunc_allocInfo
+            {
+                inline expfunc_allocInfo( void )
+                {
+                    this->isForwarder = false;
+                    this->isNamed = false;
+                }
+
+                DWORD forwarder_off;
+                bool isForwarder;
+                PESectionAllocation name_off;
+                bool isNamed;
+            };
+            
+            std::unordered_map <size_t, expfunc_allocInfo> allocInfos;
+
+            // Determine if we need to allocate a function name mapping.
+            size_t numNamedEntries = 0;
+
+            // Allocate forwarder RVAs.
+            const size_t numExportEntries = expDir.functions.size();
+
+            PESectionAllocation expDirAlloc;
+            {
+                FileSpaceAllocMan expAllocMan;
+
+                expAllocMan.AllocateAt( 0, sizeof( IMAGE_EXPORT_DIRECTORY ) );
+
+                for ( size_t n = 0; n < numExportEntries; n++ )
+                {
+                    const PEExportDir::func& funcEntry = expDir.functions[ n ];
+
+                    if ( funcEntry.isForwarder )
+                    {
+                        // Allocate an entry for the forwarder.
+                        const size_t strSize = ( funcEntry.forwarder.size() + 1 );
+
+                        DWORD forwOffset = expAllocMan.AllocateAny( strSize, 1 );
+
+                        expfunc_allocInfo& info = allocInfos[ n ];
+                        info.forwarder_off = forwOffset;
+                        info.isForwarder = true;
+                    }
+
+                    // Are we a named entry? If yes we will need a mapping.
+                    if ( funcEntry.isNamed )
+                    {
+                        // Allocate an entry for the name.
+                        const size_t strSize = ( funcEntry.name.size() + 1 );
+                    
+                        expfunc_allocInfo& info = allocInfos[ n ];
+                        rdonlySect.Allocate( info.name_off, strSize, 1 );
+                        info.isNamed = true;
+
+                        // We definately need a name-ordinal map.
+                        numNamedEntries++;
+                    }
+                }
+
+                // Since all entries inside the alloc directory are indeed allocated,
+                // we can create the allocation in the section!
+                rdonlySect.Allocate( expDirAlloc, expAllocMan.GetSpanSize( 1 ), sizeof(DWORD) );
+            }
+
+            // Now allocate the necessary arrays for export data.
+            // Data offset, optional name ptr and orderinal maps.
+            const size_t dataOffTableSize = ( sizeof(DWORD) * numExportEntries );
+
+            PESectionAllocation dataTabOffAlloc;
+            rdonlySect.Allocate( dataTabOffAlloc, dataOffTableSize );
+
+            PESectionAllocation namePtrTableAlloc;
+            PESectionAllocation ordMapTableAlloc;
+
+            if ( numNamedEntries != 0 )
+            {
+                const size_t namePtrTableSize = ( sizeof(DWORD) * numNamedEntries );
+
+                rdonlySect.Allocate( namePtrTableAlloc, namePtrTableSize );
+
+                const size_t ordMapTableSize = ( sizeof(DWORD) * numNamedEntries );
+
+                rdonlySect.Allocate( ordMapTableAlloc, ordMapTableSize, sizeof(WORD) );
+            }
+
+            // At this point the entire export directory data is allocated.
+            // Let's write it!
+            IMAGE_EXPORT_DIRECTORY header;
+            header.Characteristics = expDir.chars;
+            header.TimeDateStamp = expDir.timeDateStamp;
+            header.MajorVersion = expDir.majorVersion;
+            header.MinorVersion = expDir.minorVersion;
+            
+        }
+    }
+    
     // Prepare the data directories.
     IMAGE_DATA_DIRECTORY peDataDirs[ IMAGE_NUMBEROF_DIRECTORY_ENTRIES ];
     {
@@ -1969,7 +2140,7 @@ void PEFile::WriteToStream( CFile *peStream )
             {
                 // Allocate this section.
                 const DWORD allocVirtualSize = ALIGN_SIZE( theSect.virtualSize, this->peOptHeader.sectionAlignment );
-                const DWORD rawDataSize = (DWORD)theSect.rawdata.size();
+                const DWORD rawDataSize = (DWORD)theSect.stream.Size();
 
                 DWORD sectOffset = allocMan.AllocateAny( rawDataSize, this->peOptHeader.fileAlignment );
 
@@ -1994,7 +2165,7 @@ void PEFile::WriteToStream( CFile *peStream )
                 }
 
                 // Also write the PE data.
-                PEWrite( peStream, sectOffset, rawDataSize, theSect.rawdata.data() );
+                PEWrite( peStream, sectOffset, rawDataSize, theSect.stream.Data() );
 
                 // TODO: make sure that sections are written in ascending order of their virtual addresses.
 
