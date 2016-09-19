@@ -218,40 +218,74 @@ private:
     {
         PESection( void );
         PESection( const PESection& right ) = delete;
-        PESection( PESection&& right ) = default;
+        PESection( PESection&& right )
+            : shortName( std::move( right.shortName ) ), virtualSize( std::move( right.virtualSize ) ),
+              virtualAddr( std::move( right.virtualAddr ) ), relocations( std::move( right.relocations ) ),
+              linenumbers( std::move( linenumbers ) ), chars( std::move( right.chars ) ),
+              isFinal( std::move( right.isFinal ) ), dataAlloc( std::move( right.dataAlloc ) ),
+              streamAllocMan( std::move( right.streamAllocMan ) ), stream( std::move( stream ) ),
+              placedOffsets( std::move( right.placedOffsets ) ), RVAreferalList( std::move( right.RVAreferalList ) )
+        {
+            // Since I have been writing this, how about a move constructor that allows
+            // default-construction of all members but on top of that executes its own constructor body?
+
+            // We keep a list of RVAs that point to us, which needs updating.
+            patchSectionPointers();
+        }
         ~PESection( void );
 
+    private:
+        inline void patchSectionPointers( void )
+        {
+            // First we want to fix the allocations that have been made on this section.
+            LIST_FOREACH_BEGIN( sectionSpaceAlloc_t::block_t, this->dataAlloc.blockList.root, node )
+
+                PESectionAllocation *allocInfo = PESectionAllocation::GetSectionAllocationFromAllocBlock( item );
+
+                allocInfo->theSection = this;
+
+            LIST_FOREACH_END
+
+            // Then fix the RVAs that could target us.
+            LIST_FOREACH_BEGIN( PEPlacedOffset, this->RVAreferalList.root, targetNode )
+
+                item->targetSect = this;
+
+            LIST_FOREACH_END
+        }
+
+    public:
         inline PESection& operator =( const PESection& right ) = delete;
-        inline PESection& operator =( PESection&& right ) = default;
+        inline PESection& operator =( PESection&& right )
+        {
+            // The same default-assignment paradigm could be applied here as
+            // for the move constructor.
+
+            this->shortName = std::move( right.shortName );
+            this->virtualSize = std::move( right.virtualSize );
+            this->virtualAddr = std::move( right.virtualAddr );
+            this->relocations = std::move( right.relocations );
+            this->linenumbers = std::move( right.linenumbers );
+            this->chars = std::move( right.chars );
+            this->isFinal = std::move( right.isFinal );
+            this->dataAlloc = std::move( right.dataAlloc );
+            this->streamAllocMan = std::move( right.streamAllocMan );
+            this->stream = std::move( right.stream );
+            this->placedOffsets = std::move( right.placedOffsets );
+            this->RVAreferalList = std::move( right.RVAreferalList );
+
+            patchSectionPointers();
+
+            return *this;
+        }
 
         std::string shortName;
-        union
-        {
-            std::uint32_t physAddr;
-            std::uint32_t virtualSize;
-        };
+        std::uint32_t virtualSize;
         std::uint32_t virtualAddr;
         
         std::vector <PERelocation> relocations;
         std::vector <PELinenumber> linenumbers;
 
-        // Characteristics.
-        bool sect_hasNoPadding;
-        bool sect_containsCode;
-        bool sect_containsInitData;
-        bool sect_containsUninitData;
-        bool sect_link_other;
-        bool sect_link_info;
-        bool sect_link_remove;
-        bool sect_link_comdat;
-        bool sect_noDeferSpecExcepts;
-        bool sect_gprel;
-        bool sect_mem_farData;
-        bool sect_mem_purgeable;
-        bool sect_mem_16bit;
-        bool sect_mem_locked;
-        bool sect_mem_preload;
-        
         enum class eAlignment
         {
             BYTES_UNSPECIFIED,
@@ -270,16 +304,37 @@ private:
             BYTES_4096,
             BYTES_8192
         };
-        eAlignment sect_alignment;
 
-        bool sect_link_nreloc_ovfl;
-        bool sect_mem_discardable;
-        bool sect_mem_not_cached;
-        bool sect_mem_not_paged;
-        bool sect_mem_shared;
-        bool sect_mem_execute;
-        bool sect_mem_read;
-        bool sect_mem_write;
+        // Characteristics.
+        struct
+        {
+            bool sect_hasNoPadding;
+            bool sect_containsCode;
+            bool sect_containsInitData;
+            bool sect_containsUninitData;
+            bool sect_link_other;
+            bool sect_link_info;
+            bool sect_link_remove;
+            bool sect_link_comdat;
+            bool sect_noDeferSpecExcepts;
+            bool sect_gprel;
+            bool sect_mem_farData;
+            bool sect_mem_purgeable;
+            bool sect_mem_16bit;
+            bool sect_mem_locked;
+            bool sect_mem_preload;
+        
+            eAlignment sect_alignment;
+
+            bool sect_link_nreloc_ovfl;
+            bool sect_mem_discardable;
+            bool sect_mem_not_cached;
+            bool sect_mem_not_paged;
+            bool sect_mem_shared;
+            bool sect_mem_execute;
+            bool sect_mem_read;
+            bool sect_mem_write;
+        } chars;
 
         // Meta-data that we manage.
         // * Allocation status.
@@ -322,6 +377,7 @@ private:
                 // Invalidate the old section.
                 right.theSection = NULL;
             }
+            inline PESectionAllocation( const PESectionAllocation& right ) = delete;
 
         private:
             inline void removeFromSection( void )
@@ -347,6 +403,7 @@ private:
 
                 new (this) PESectionAllocation( std::move( right ) );
             }
+            inline void operator = ( const PESectionAllocation& right ) = delete;
 
             inline ~PESectionAllocation( void )
             {
@@ -356,13 +413,27 @@ private:
             // Data-access methods for this allocation
             void WriteToSection( const void *dataPtr, std::uint32_t dataSize, std::int32_t dataOff = 0 );
 
+            // For allocating placed RVAs into allocated structs.
+            void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff );
+            void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff = 0 );
+
             PESection *theSection;
             std::uint32_t sectOffset;
             std::uint32_t dataSize;     // if 0 then true size not important/unknown.
 
+            inline bool IsAllocated( void ) const
+            {
+                return ( theSection != NULL );
+            }
+
             // Every allocation can ONLY exist on ONE section.
 
             sectionSpaceAlloc_t::block_t sectionBlock;
+
+            inline static PESectionAllocation* GetSectionAllocationFromAllocBlock( sectionSpaceAlloc_t::block_t *block )
+            {
+                return (PESectionAllocation*)( (char*)block - offsetof(PESectionAllocation, sectionBlock) );
+            }
         };
 
         // Allocation methods.
@@ -375,6 +446,18 @@ private:
         // Otherwise we keep a collisionless struct of allocations we made.
         sectionSpaceAlloc_t dataAlloc;
 
+        inline bool IsEmpty( void ) const
+        {
+            if ( isFinal )
+            {
+                return ( this->virtualSize == 0 );
+            }
+            else
+            {
+                return ( LIST_EMPTY( this->dataAlloc.blockList.root ) == true );
+            }
+        }
+
 private:
         // Writing and possibly reading from this data section
         // should be done through this memory stream.
@@ -384,6 +467,70 @@ public:
         typedef BasicMemStream::basicMemoryBufferStream <std::int32_t> memStream;
 
         memStream stream;
+
+        // We need RVA finalization patches which come in the form of virtual
+        // RVA registrations into a section.
+        struct PEPlacedOffset
+        {
+            inline PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect )
+            {
+                this->dataOffset = dataOffset;
+                this->targetSect = targetSect;
+                this->offsetIntoSect = offsetIntoSect;
+
+                LIST_INSERT( targetSect->RVAreferalList.root, this->targetNode );
+            }
+
+            inline PEPlacedOffset( PEPlacedOffset&& right )
+            {
+                PESection *targetSect = right.targetSect;
+
+                this->dataOffset = right.dataOffset;
+                this->targetSect = targetSect;
+                this->offsetIntoSect = right.offsetIntoSect;
+
+                if ( targetSect )
+                {
+                    this->targetNode.moveFrom( std::move( right.targetNode ) );
+
+                    right.targetSect = NULL;
+                }
+            }
+
+            inline PEPlacedOffset( const PEPlacedOffset& right ) = delete;
+
+            inline ~PEPlacedOffset( void )
+            {
+                if ( this->targetSect )
+                {
+                    LIST_REMOVE( this->targetNode );
+                }
+            }
+
+            inline PEPlacedOffset& operator =( PEPlacedOffset&& right )
+            {
+                this->~PEPlacedOffset();
+
+                new (this) PEPlacedOffset( std::move( right ) );
+
+                return *this;
+            }
+            inline PEPlacedOffset& operator =( const PEPlacedOffset& right ) = delete;
+
+            std::int32_t dataOffset;        // the offset into the section where the RVA has to be written.
+            PESection *targetSect;          // before getting a real RVA the section has to be allocated.
+            std::int32_t offsetIntoSect;    // we have to add this to the section placement to get real RVA.
+
+            RwListEntry <PEPlacedOffset> targetNode;    // list node inside target section to keep pointer valid.
+        };
+
+        std::vector <PEPlacedOffset> placedOffsets;     // list of all RVAs that are in the data of this section.
+
+        RwList <PEPlacedOffset> RVAreferalList;     // list of all our placed RVAs that refer to this section.
+
+        // API to register RVAs for commit phase.
+        void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset );
+        void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo );
     };
     using PESectionAllocation = PESection::PESectionAllocation;
 
@@ -413,10 +560,10 @@ public:
         struct func
         {
             // Mandatory valid fields for each function.
-            std::uint32_t exportOff;
+            std::uint32_t forwExpFuncOffset;    // might look like an allocation but is NOT.
+            PESection *forwExpFuncSection;
             std::string forwarder;
             bool isForwarder;
-            PESectionAllocation forwAllocEntry;
             
             // Optional fields.
             std::string name;       // is valid if not empty

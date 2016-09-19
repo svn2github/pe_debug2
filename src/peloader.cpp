@@ -359,40 +359,40 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
         PESection section;
         section.shortName = std::string( (const char*)sectHeader.Name, strnlen( (const char*)sectHeader.Name, IMAGE_SIZEOF_SHORT_NAME ) );
-        section.physAddr = sectHeader.Misc.PhysicalAddress;
+        section.virtualSize = sectHeader.Misc.VirtualSize;
         section.virtualAddr = sectHeader.VirtualAddress;
         
         // Save characteristics flags.
         DWORD schars = sectHeader.Characteristics;
 
-        section.sect_hasNoPadding = ( schars & IMAGE_SCN_TYPE_NO_PAD ) != 0;
-        section.sect_containsCode = ( schars & IMAGE_SCN_CNT_CODE ) != 0;
-        section.sect_containsInitData = ( schars & IMAGE_SCN_CNT_INITIALIZED_DATA ) != 0;
-        section.sect_containsUninitData = ( schars & IMAGE_SCN_CNT_UNINITIALIZED_DATA ) != 0;
-        section.sect_link_other = ( schars & IMAGE_SCN_LNK_OTHER ) != 0;
-        section.sect_link_info = ( schars & IMAGE_SCN_LNK_INFO ) != 0;
-        section.sect_link_remove = ( schars & IMAGE_SCN_LNK_REMOVE ) != 0;
-        section.sect_link_comdat = ( schars & IMAGE_SCN_LNK_COMDAT ) != 0;
-        section.sect_noDeferSpecExcepts = ( schars & IMAGE_SCN_NO_DEFER_SPEC_EXC ) != 0;
-        section.sect_gprel = ( schars & IMAGE_SCN_GPREL ) != 0;
-        section.sect_mem_farData = ( schars & IMAGE_SCN_MEM_FARDATA ) != 0;
-        section.sect_mem_purgeable = ( schars & IMAGE_SCN_MEM_PURGEABLE ) != 0;
-        section.sect_mem_16bit = ( schars & IMAGE_SCN_MEM_16BIT ) != 0;
-        section.sect_mem_locked = ( schars & IMAGE_SCN_MEM_LOCKED ) != 0;
-        section.sect_mem_preload = ( schars & IMAGE_SCN_MEM_PRELOAD ) != 0;
+        section.chars.sect_hasNoPadding = ( schars & IMAGE_SCN_TYPE_NO_PAD ) != 0;
+        section.chars.sect_containsCode = ( schars & IMAGE_SCN_CNT_CODE ) != 0;
+        section.chars.sect_containsInitData = ( schars & IMAGE_SCN_CNT_INITIALIZED_DATA ) != 0;
+        section.chars.sect_containsUninitData = ( schars & IMAGE_SCN_CNT_UNINITIALIZED_DATA ) != 0;
+        section.chars.sect_link_other = ( schars & IMAGE_SCN_LNK_OTHER ) != 0;
+        section.chars.sect_link_info = ( schars & IMAGE_SCN_LNK_INFO ) != 0;
+        section.chars.sect_link_remove = ( schars & IMAGE_SCN_LNK_REMOVE ) != 0;
+        section.chars.sect_link_comdat = ( schars & IMAGE_SCN_LNK_COMDAT ) != 0;
+        section.chars.sect_noDeferSpecExcepts = ( schars & IMAGE_SCN_NO_DEFER_SPEC_EXC ) != 0;
+        section.chars.sect_gprel = ( schars & IMAGE_SCN_GPREL ) != 0;
+        section.chars.sect_mem_farData = ( schars & IMAGE_SCN_MEM_FARDATA ) != 0;
+        section.chars.sect_mem_purgeable = ( schars & IMAGE_SCN_MEM_PURGEABLE ) != 0;
+        section.chars.sect_mem_16bit = ( schars & IMAGE_SCN_MEM_16BIT ) != 0;
+        section.chars.sect_mem_locked = ( schars & IMAGE_SCN_MEM_LOCKED ) != 0;
+        section.chars.sect_mem_preload = ( schars & IMAGE_SCN_MEM_PRELOAD ) != 0;
         
         // Parse the alignment information out of the chars.
         PESection::eAlignment alignNum = (PESection::eAlignment)( ( schars & 0x00F00000 ) >> 20 );
-        section.sect_alignment = alignNum;
+        section.chars.sect_alignment = alignNum;
 
-        section.sect_link_nreloc_ovfl = ( schars & IMAGE_SCN_LNK_NRELOC_OVFL ) != 0;
-        section.sect_mem_discardable = ( schars & IMAGE_SCN_MEM_DISCARDABLE ) != 0;
-        section.sect_mem_not_cached = ( schars & IMAGE_SCN_MEM_NOT_CACHED ) != 0;
-        section.sect_mem_not_paged = ( schars & IMAGE_SCN_MEM_NOT_PAGED ) != 0;
-        section.sect_mem_shared = ( schars & IMAGE_SCN_MEM_SHARED ) != 0;
-        section.sect_mem_execute = ( schars & IMAGE_SCN_MEM_EXECUTE ) != 0;
-        section.sect_mem_read = ( schars & IMAGE_SCN_MEM_READ ) != 0;
-        section.sect_mem_write = ( schars & IMAGE_SCN_MEM_WRITE ) != 0;
+        section.chars.sect_link_nreloc_ovfl = ( schars & IMAGE_SCN_LNK_NRELOC_OVFL ) != 0;
+        section.chars.sect_mem_discardable = ( schars & IMAGE_SCN_MEM_DISCARDABLE ) != 0;
+        section.chars.sect_mem_not_cached = ( schars & IMAGE_SCN_MEM_NOT_CACHED ) != 0;
+        section.chars.sect_mem_not_paged = ( schars & IMAGE_SCN_MEM_NOT_PAGED ) != 0;
+        section.chars.sect_mem_shared = ( schars & IMAGE_SCN_MEM_SHARED ) != 0;
+        section.chars.sect_mem_execute = ( schars & IMAGE_SCN_MEM_EXECUTE ) != 0;
+        section.chars.sect_mem_read = ( schars & IMAGE_SCN_MEM_READ ) != 0;
+        section.chars.sect_mem_write = ( schars & IMAGE_SCN_MEM_WRITE ) != 0;
 
         // Read raw data.
         {
@@ -569,23 +569,36 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         isForwarder = ( rvaSlice_t::isFloatingIntersect( intResult ) == false );
 
                         // Store properties according to the type.
+                        PESection *exportOffPtrSect;
+
+                        const void *expOffPtr = GetPEDataPointer( sections, ptr, 1, &exportOffPtrSect );
+
+                        if ( !expOffPtr )
+                            throw std::exception( "failed to get PE export offset pointer" );
+
+                        // We store the location of the data entry, but NOTE that
+                        // this behavior NEVER is an allocation!
+                        {
+                            DWORD offStore;
+
+                            if ( isForwarder )
+                            {
+                                offStore = ( ptr - expDirEntry.VirtualAddress );
+                            }
+                            else
+                            {
+                                offStore = ( ptr - exportOffPtrSect->virtualAddr );
+                            }
+
+                            fentry.forwExpFuncOffset = ptr;
+                            fentry.forwExpFuncSection = exportOffPtrSect;
+                        }
+
                         if ( isForwarder )
                         {
-                            PESection *forwarderNamePtrSect;
+                            const char *forwNamePtr = (const char*)expOffPtr;
 
-                            const char *forwarderNamePtr = (const char*)GetPEDataPointer( sections, ptr, 1, &forwarderNamePtrSect );
-
-                            if ( !forwarderNamePtr )
-                                throw std::exception( "failed to get PE forwarder name pointer" );
-
-                            forwarderNamePtrSect->SetPlacedMemory( fentry.forwAllocEntry, ptr );
-
-                            fentry.forwarder = forwarderNamePtr;
-                            fentry.exportOff = 0xFFFFFFFF;
-                        }
-                        else
-                        {
-                            fentry.exportOff = ptr;
+                            fentry.forwarder = forwNamePtr;
                         }
                     }
                     fentry.isForwarder = isForwarder;
@@ -1591,36 +1604,62 @@ PEFile::PESection::PESection( void ) : stream( NULL, 0, streamAllocMan )
 {
     this->virtualSize = 0;
     this->virtualAddr = 0;
-    this->sect_hasNoPadding = true;
-    this->sect_containsCode = false;
-    this->sect_containsInitData = false;
-    this->sect_containsUninitData = false;
-    this->sect_link_other = false;
-    this->sect_link_info = false;
-    this->sect_link_remove = false;
-    this->sect_link_comdat = false;
-    this->sect_noDeferSpecExcepts = false;
-    this->sect_gprel = false;
-    this->sect_mem_farData = false;
-    this->sect_mem_purgeable = false;
-    this->sect_mem_16bit = false;
-    this->sect_mem_locked = false;
-    this->sect_mem_preload = false;
-    this->sect_alignment = eAlignment::BYTES_1;
-    this->sect_link_nreloc_ovfl = false;
-    this->sect_mem_discardable = false;
-    this->sect_mem_not_cached = false;
-    this->sect_mem_not_paged = false;
-    this->sect_mem_shared = false;
-    this->sect_mem_execute = false;
-    this->sect_mem_read = true;
-    this->sect_mem_write = false;
+    this->chars.sect_hasNoPadding = true;
+    this->chars.sect_containsCode = false;
+    this->chars.sect_containsInitData = false;
+    this->chars.sect_containsUninitData = false;
+    this->chars.sect_link_other = false;
+    this->chars.sect_link_info = false;
+    this->chars.sect_link_remove = false;
+    this->chars.sect_link_comdat = false;
+    this->chars.sect_noDeferSpecExcepts = false;
+    this->chars.sect_gprel = false;
+    this->chars.sect_mem_farData = false;
+    this->chars.sect_mem_purgeable = false;
+    this->chars.sect_mem_16bit = false;
+    this->chars.sect_mem_locked = false;
+    this->chars.sect_mem_preload = false;
+    this->chars.sect_alignment = eAlignment::BYTES_1;
+    this->chars.sect_link_nreloc_ovfl = false;
+    this->chars.sect_mem_discardable = false;
+    this->chars.sect_mem_not_cached = false;
+    this->chars.sect_mem_not_paged = false;
+    this->chars.sect_mem_shared = false;
+    this->chars.sect_mem_execute = false;
+    this->chars.sect_mem_read = true;
+    this->chars.sect_mem_write = false;
     this->isFinal = false;
 }
 
 PEFile::PESection::~PESection( void )
 {
-    return;
+    // Destruction requires several undo-operations related to PE validity.
+    // * all active section allocations have to be invalidated (they can be)
+    {
+        LIST_FOREACH_BEGIN( sectionSpaceAlloc_t::block_t, this->dataAlloc.blockList.root, node )
+
+            PESectionAllocation *allocEntry = PESectionAllocation::GetSectionAllocationFromAllocBlock( item );
+
+            allocEntry->theSection = NULL;
+            allocEntry->sectOffset = 0;
+            allocEntry->dataSize = 0;
+
+        LIST_FOREACH_END
+
+        this->dataAlloc.Clear();
+    }
+    // * all active placed offsets that refer to this section must be invalidated (write a dead-pointer instead)
+    {
+        LIST_FOREACH_BEGIN( PEPlacedOffset, this->RVAreferalList.root, targetNode )
+
+            item->targetSect = NULL;
+            item->dataOffset = 0;
+            item->offsetIntoSect = 0;
+
+        LIST_FOREACH_END
+
+        LIST_CLEAR( this->RVAreferalList.root );
+    }
 }
 
 // Allocation methods of PESection.
@@ -1666,6 +1705,16 @@ void PEFile::PESectionAllocation::WriteToSection( const void *dataPtr, std::uint
     allocSect->stream.Write( dataPtr, dataSize );
 }
 
+void PEFile::PESectionAllocation::RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff )
+{
+    this->theSection->RegisterTargetRVA( this->sectOffset + patchOffset, targetSect, targetOff );
+}
+
+void PEFile::PESectionAllocation::RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff )
+{
+    this->RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset + targetOff );
+}
+
 void PEFile::PESection::SetPlacedMemory( PESectionAllocation& blockMeta, std::uint32_t allocOff, std::uint32_t allocSize )
 {
     assert( this->isFinal == true );
@@ -1681,82 +1730,82 @@ std::uint32_t PEFile::PESection::GetPENativeFlags( void ) const
 {
     std::uint32_t chars = 0;
 
-    if ( this->sect_hasNoPadding )
+    if ( this->chars.sect_hasNoPadding )
     {
         chars |= IMAGE_SCN_TYPE_NO_PAD;
     }
 
-    if ( this->sect_containsCode )
+    if ( this->chars.sect_containsCode )
     {
         chars |= IMAGE_SCN_CNT_CODE;
     }
 
-    if ( this->sect_containsInitData )
+    if ( this->chars.sect_containsInitData )
     {
         chars |= IMAGE_SCN_CNT_INITIALIZED_DATA;
     }
 
-    if ( this->sect_containsUninitData )
+    if ( this->chars.sect_containsUninitData )
     {
         chars |= IMAGE_SCN_CNT_UNINITIALIZED_DATA;
     }
 
-    if ( this->sect_link_other )
+    if ( this->chars.sect_link_other )
     {
         chars |= IMAGE_SCN_LNK_OTHER;
     }
 
-    if ( this->sect_link_info )
+    if ( this->chars.sect_link_info )
     {
         chars |= IMAGE_SCN_LNK_INFO;
     }
 
-    if ( this->sect_link_remove )
+    if ( this->chars.sect_link_remove )
     {
         chars |= IMAGE_SCN_LNK_REMOVE;
     }
 
-    if ( this->sect_link_comdat )
+    if ( this->chars.sect_link_comdat )
     {
         chars |= IMAGE_SCN_LNK_COMDAT;
     }
 
-    if ( this->sect_noDeferSpecExcepts )
+    if ( this->chars.sect_noDeferSpecExcepts )
     {
         chars |= IMAGE_SCN_NO_DEFER_SPEC_EXC;
     }
 
-    if ( this->sect_gprel )
+    if ( this->chars.sect_gprel )
     {
         chars |= IMAGE_SCN_GPREL;
     }
 
-    if ( this->sect_mem_farData )
+    if ( this->chars.sect_mem_farData )
     {
         chars |= IMAGE_SCN_MEM_FARDATA;
     }
 
-    if ( this->sect_mem_purgeable )
+    if ( this->chars.sect_mem_purgeable )
     {
         chars |= IMAGE_SCN_MEM_PURGEABLE;
     }
 
-    if ( this->sect_mem_16bit )
+    if ( this->chars.sect_mem_16bit )
     {
         chars |= IMAGE_SCN_MEM_16BIT;
     }
 
-    if ( this->sect_mem_locked )
+    if ( this->chars.sect_mem_locked )
     {
         chars |= IMAGE_SCN_MEM_LOCKED;
     }
 
-    if ( this->sect_mem_preload )
+    if ( this->chars.sect_mem_preload )
     {
         chars |= IMAGE_SCN_MEM_PRELOAD;
     }
 
-    switch( this->sect_alignment )
+    switch( this->chars.sect_alignment )
     {
     case eAlignment::BYTES_UNSPECIFIED: break;  // unknown.
     case eAlignment::BYTES_1:           chars |= IMAGE_SCN_ALIGN_1BYTES; break;
@@ -1776,42 +1825,42 @@ std::uint32_t PEFile::PESection::GetPENativeFlags( void ) const
     default:                            break;  // should never happen.
     }
 
-    if ( this->sect_link_nreloc_ovfl )
+    if ( this->chars.sect_link_nreloc_ovfl )
     {
         chars |= IMAGE_SCN_LNK_NRELOC_OVFL;
     }
 
-    if ( this->sect_mem_discardable )
+    if ( this->chars.sect_mem_discardable )
     {
         chars |= IMAGE_SCN_MEM_DISCARDABLE;
     }
 
-    if ( this->sect_mem_not_cached )
+    if ( this->chars.sect_mem_not_cached )
     {
         chars |= IMAGE_SCN_MEM_NOT_CACHED;
     }
 
-    if ( this->sect_mem_not_paged )
+    if ( this->chars.sect_mem_not_paged )
     {
         chars |= IMAGE_SCN_MEM_NOT_PAGED;
     }
 
-    if ( this->sect_mem_shared )
+    if ( this->chars.sect_mem_shared )
     {
         chars |= IMAGE_SCN_MEM_SHARED;
     }
 
-    if ( this->sect_mem_execute )
+    if ( this->chars.sect_mem_execute )
     {
         chars |= IMAGE_SCN_MEM_EXECUTE;
     }
 
-    if ( this->sect_mem_read )
+    if ( this->chars.sect_mem_read )
     {
         chars |= IMAGE_SCN_MEM_READ;
     }
 
-    if ( this->sect_mem_write )
+    if ( this->chars.sect_mem_write )
     {
         chars |= IMAGE_SCN_MEM_WRITE;
     }
@@ -1819,10 +1868,245 @@ std::uint32_t PEFile::PESection::GetPENativeFlags( void ) const
     return chars;
 }
 
+void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset )
+{
+    this->placedOffsets.emplace_back( patchOffset, targetSect, targetOffset );
+}
+
+void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo )
+{
+    RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset );
+}
+
+template <typename keyType, typename mapType>
+inline decltype( auto ) FindMapValue( mapType& map, const keyType& key )
+{
+    const auto& foundIter = map.find( key );
+
+    if ( foundIter == map.end() )
+        return (decltype(&foundIter->second))NULL;
+
+    return &foundIter->second;
+}
+
 void PEFile::CommitDataDirectories( void )
 {
-    // TODO.
-    return;
+    // TODO: ensure that data has been properly committed to data sections which had to be.
+    // First allocate a new section that should serve as allocation target.
+    {
+        PESection rdonlySect;
+        rdonlySect.shortName = ".the_gta";
+
+        PESection dataSect;
+        dataSect.shortName = ".quiret";
+
+        // We need to perform allocations onto directory structures for all meta-data.
+        {
+            // We first have to allocate everything.
+
+            // * EXPORT DIRECTORY.
+            PEExportDir& expDir = this->exportDir;
+
+            if ( expDir.chars != 0 || expDir.name.empty() == false || expDir.functions.empty() == false )
+            {
+                // Allocate each directory with its own allocator.
+                struct expfunc_allocInfo
+                {
+                    DWORD forwarder_off;
+                    PESectionAllocation name_off;
+                };
+            
+                std::unordered_map <size_t, expfunc_allocInfo> allocInfos;
+
+                // Determine if we need to allocate a function name mapping.
+                size_t numNamedEntries = 0;
+
+                // Allocate forwarder RVAs.
+                const size_t numExportEntries = expDir.functions.size();
+
+                PESectionAllocation expDirAlloc;
+                {
+                    FileSpaceAllocMan expAllocMan;
+
+                    expAllocMan.AllocateAt( 0, sizeof( IMAGE_EXPORT_DIRECTORY ) );
+
+                    for ( size_t n = 0; n < numExportEntries; n++ )
+                    {
+                        const PEExportDir::func& funcEntry = expDir.functions[ n ];
+
+                        if ( funcEntry.isForwarder )
+                        {
+                            // Allocate an entry for the forwarder.
+                            const size_t strSize = ( funcEntry.forwarder.size() + 1 );
+
+                            DWORD forwOffset = expAllocMan.AllocateAny( strSize, 1 );
+
+                            expfunc_allocInfo& info = allocInfos[ n ];
+                            info.forwarder_off = forwOffset;
+                        }
+
+                        // Are we a named entry? If yes we will need a mapping.
+                        if ( funcEntry.isNamed )
+                        {
+                            // Allocate an entry for the name.
+                            const size_t strSize = ( funcEntry.name.size() + 1 );
+                    
+                            expfunc_allocInfo& info = allocInfos[ n ];
+                            rdonlySect.Allocate( info.name_off, strSize, 1 );
+
+                            // We definately need a name-ordinal map.
+                            numNamedEntries++;
+                        }
+                    }
+
+                    // Since all entries inside the alloc directory are indeed allocated,
+                    // we can create the allocation in the section!
+                    rdonlySect.Allocate( expDirAlloc, expAllocMan.GetSpanSize( 1 ), sizeof(DWORD) );
+                }
+
+                // Now allocate the necessary arrays for export data.
+                // Data offset, optional name ptr and orderinal maps.
+                const size_t dataOffTableSize = ( sizeof(DWORD) * numExportEntries );
+
+                PESectionAllocation dataTabOffAlloc;
+                rdonlySect.Allocate( dataTabOffAlloc, dataOffTableSize );
+
+                PESectionAllocation namePtrTableAlloc;
+                PESectionAllocation ordMapTableAlloc;
+
+                if ( numNamedEntries != 0 )
+                {
+                    const size_t namePtrTableSize = ( sizeof(DWORD) * numNamedEntries );
+
+                    rdonlySect.Allocate( namePtrTableAlloc, namePtrTableSize );
+
+                    const size_t ordMapTableSize = ( sizeof(DWORD) * numNamedEntries );
+
+                    rdonlySect.Allocate( ordMapTableAlloc, ordMapTableSize, sizeof(WORD) );
+                }
+
+                // Also need to write the module name.
+                const size_t moduleNameSize = ( expDir.name.size() + 1 );
+
+                PESectionAllocation moduleNameAlloc;
+                rdonlySect.Allocate( moduleNameAlloc, moduleNameSize, 1 );
+
+                // At this point the entire export directory data is allocated.
+                // Let's write it!
+                IMAGE_EXPORT_DIRECTORY header;
+                header.Characteristics = expDir.chars;
+                header.TimeDateStamp = expDir.timeDateStamp;
+                header.MajorVersion = expDir.majorVersion;
+                header.MinorVersion = expDir.minorVersion;
+                header.Name = 0;
+                rdonlySect.RegisterTargetRVA( expDirAlloc.sectOffset + offsetof(IMAGE_EXPORT_DIRECTORY, Name), moduleNameAlloc );
+                header.Base = expDir.ordinalBase;
+                header.NumberOfFunctions = (DWORD)numExportEntries;
+                header.NumberOfNames = (DWORD)numNamedEntries;
+                header.AddressOfFunctions = 0;
+                expDirAlloc.RegisterTargetRVA( offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfFunctions), dataTabOffAlloc );
+                header.AddressOfNames = 0;
+                expDirAlloc.RegisterTargetRVA( offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNames), namePtrTableAlloc );
+                header.AddressOfNameOrdinals = 0;
+                expDirAlloc.RegisterTargetRVA( offsetof(IMAGE_EXPORT_DIRECTORY, AddressOfNameOrdinals), ordMapTableAlloc );
+
+                expDirAlloc.WriteToSection( &header, sizeof(header), 0 );
+
+                // Write module name.
+                moduleNameAlloc.WriteToSection( expDir.name.c_str(), moduleNameSize );
+            
+                // Write export offsets.
+                for ( size_t n = 0; n < numExportEntries; n++ )
+                {
+                    const PEExportDir::func& funcInfo = expDir.functions[ n ];
+
+                    // First shedule the offset for writing.
+                    const std::uint32_t dataTabItemOff = ( sizeof(DWORD) * n );
+
+                    const expfunc_allocInfo *finfo = FindMapValue( allocInfos, n );
+
+                    if ( funcInfo.isForwarder )
+                    {
+                        assert( finfo != NULL );
+
+                        dataTabOffAlloc.RegisterTargetRVA( dataTabItemOff, expDirAlloc, finfo->forwarder_off );
+                    }
+                    else
+                    {
+                        dataTabOffAlloc.RegisterTargetRVA( dataTabItemOff, funcInfo.forwExpFuncSection, funcInfo.forwExpFuncOffset );
+                    }
+                }
+
+                // Maybe write a name ordinal map.
+                if ( numNamedEntries != 0 )
+                {
+                    assert( namePtrTableAlloc.IsAllocated() == true && ordMapTableAlloc.IsAllocated() == true );
+
+                    DWORD index = 0;
+
+                    for ( const auto& keyIter : allocInfos )
+                    {
+                        WORD ordinal = (WORD)keyIter.first;
+
+                        // Write this name map entry.
+                        const size_t namePtrOff = ( sizeof(DWORD) * index );
+                        const size_t ordOff = ( sizeof(WORD) * index );
+
+                        namePtrTableAlloc.RegisterTargetRVA( namePtrOff, keyIter.second.name_off );
+                        ordMapTableAlloc.WriteToSection( &ordinal, sizeof(ordinal), ordOff );
+                    }
+                }
+
+                // After write-phase we can remember the new offsets.
+                expDir.nameAllocEntry = std::move( moduleNameAlloc );
+                expDir.funcAddressAllocEntry = std::move( dataTabOffAlloc );
+                expDir.funcNamesAllocEntry = std::move( namePtrTableAlloc );
+                expDir.funcOrdinalsAllocEntry = std::move( ordMapTableAlloc );
+
+                for ( size_t n = 0; n < numExportEntries; n++ )
+                {
+                    PEExportDir::func& funcEntry = expDir.functions[ n ];
+
+                    expfunc_allocInfo *finfo = FindMapValue( allocInfos, n );
+
+                    if ( funcEntry.isForwarder )
+                    {
+                        assert( finfo != NULL );
+
+                        funcEntry.forwExpFuncOffset = finfo->forwarder_off;
+                        funcEntry.forwExpFuncSection = expDirAlloc.theSection;
+                    }
+
+                    if ( funcEntry.isNamed )
+                    {
+                        funcEntry.nameAllocEntry = std::move( finfo->name_off );
+                    }
+                }
+
+                // Last but not least, our export directory pointer.
+                expDir.allocEntry = std::move( expDirAlloc );
+            }
+        }
+
+        // Put the sections into the executable which actually matter.
+        if ( rdonlySect.IsEmpty() == false )
+        {
+            this->sections.push_back( std::move( rdonlySect ) );
+        }
+        if ( dataSect.IsEmpty() == false )
+        {
+            this->sections.push_back( std::move( dataSect ) );
+        }
+    }
+
+    // SECTION-ALLOC PHASE.
+    // Put all sections that we added into virtualAddress space.
+    // (by the way, pretty retarded that Microsoft does not allow __forceinline on lambdas.)
+
+    // After writing and storing all allocation information we should write the RVAs
+    // that we previously sheduled. This is possible because now every section has been
+    // registered in the image and placed somewhere on virtual memory.
+
 }
 
 PEFile::PESection* PEFile::FindFirstSectionByName( const char *name )
@@ -1867,119 +2151,8 @@ bool PEFile::RemoveSection( PESection *section )
 
 void PEFile::WriteToStream( CFile *peStream )
 {
-    // TODO: ensure that data has been properly committed to data sections which had to be.
-    // First allocate a new section that should serve as allocation target.
-    PESection rdonlySect;
-    rdonlySect.shortName = ".the_gta";
-
-    PESection dataSect;
-    dataSect.shortName = ".quiret";
-
-    // We need to perform allocations onto directory structures for all meta-data.
-    {
-        // We first have to allocate everything.
-
-        // * EXPORT DIRECTORY.
-        const PEExportDir& expDir = this->exportDir;
-
-        if ( expDir.chars != 0 || expDir.name.empty() == false || expDir.functions.empty() == false )
-        {
-            // Allocate each directory with its own allocator.
-            struct expfunc_allocInfo
-            {
-                inline expfunc_allocInfo( void )
-                {
-                    this->isForwarder = false;
-                    this->isNamed = false;
-                }
-
-                DWORD forwarder_off;
-                bool isForwarder;
-                PESectionAllocation name_off;
-                bool isNamed;
-            };
-            
-            std::unordered_map <size_t, expfunc_allocInfo> allocInfos;
-
-            // Determine if we need to allocate a function name mapping.
-            size_t numNamedEntries = 0;
-
-            // Allocate forwarder RVAs.
-            const size_t numExportEntries = expDir.functions.size();
-
-            PESectionAllocation expDirAlloc;
-            {
-                FileSpaceAllocMan expAllocMan;
-
-                expAllocMan.AllocateAt( 0, sizeof( IMAGE_EXPORT_DIRECTORY ) );
-
-                for ( size_t n = 0; n < numExportEntries; n++ )
-                {
-                    const PEExportDir::func& funcEntry = expDir.functions[ n ];
-
-                    if ( funcEntry.isForwarder )
-                    {
-                        // Allocate an entry for the forwarder.
-                        const size_t strSize = ( funcEntry.forwarder.size() + 1 );
-
-                        DWORD forwOffset = expAllocMan.AllocateAny( strSize, 1 );
-
-                        expfunc_allocInfo& info = allocInfos[ n ];
-                        info.forwarder_off = forwOffset;
-                        info.isForwarder = true;
-                    }
-
-                    // Are we a named entry? If yes we will need a mapping.
-                    if ( funcEntry.isNamed )
-                    {
-                        // Allocate an entry for the name.
-                        const size_t strSize = ( funcEntry.name.size() + 1 );
-                    
-                        expfunc_allocInfo& info = allocInfos[ n ];
-                        rdonlySect.Allocate( info.name_off, strSize, 1 );
-                        info.isNamed = true;
-
-                        // We definately need a name-ordinal map.
-                        numNamedEntries++;
-                    }
-                }
-
-                // Since all entries inside the alloc directory are indeed allocated,
-                // we can create the allocation in the section!
-                rdonlySect.Allocate( expDirAlloc, expAllocMan.GetSpanSize( 1 ), sizeof(DWORD) );
-            }
-
-            // Now allocate the necessary arrays for export data.
-            // Data offset, optional name ptr and orderinal maps.
-            const size_t dataOffTableSize = ( sizeof(DWORD) * numExportEntries );
-
-            PESectionAllocation dataTabOffAlloc;
-            rdonlySect.Allocate( dataTabOffAlloc, dataOffTableSize );
-
-            PESectionAllocation namePtrTableAlloc;
-            PESectionAllocation ordMapTableAlloc;
-
-            if ( numNamedEntries != 0 )
-            {
-                const size_t namePtrTableSize = ( sizeof(DWORD) * numNamedEntries );
-
-                rdonlySect.Allocate( namePtrTableAlloc, namePtrTableSize );
-
-                const size_t ordMapTableSize = ( sizeof(DWORD) * numNamedEntries );
-
-                rdonlySect.Allocate( ordMapTableAlloc, ordMapTableSize, sizeof(WORD) );
-            }
-
-            // At this point the entire export directory data is allocated.
-            // Let's write it!
-            IMAGE_EXPORT_DIRECTORY header;
-            header.Characteristics = expDir.chars;
-            header.TimeDateStamp = expDir.timeDateStamp;
-            header.MajorVersion = expDir.majorVersion;
-            header.MinorVersion = expDir.minorVersion;
-            
-        }
-    }
+    // Write data that requires writing.
+    this->CommitDataDirectories();
     
     // Prepare the data directories.
     IMAGE_DATA_DIRECTORY peDataDirs[ IMAGE_NUMBEROF_DIRECTORY_ENTRIES ];
