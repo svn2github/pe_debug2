@@ -77,6 +77,8 @@ struct PEFile
     bool HasLinenumberInfo( void ) const;
     bool HasDebugInfo( void ) const;
 
+    bool IsDynamicLinkLibrary( void ) const;
+
 private:
     // DOS information.
     struct DOSStub
@@ -155,7 +157,6 @@ private:
         std::uint32_t baseOfData;
 
         std::uint64_t imageBase;
-        std::uint32_t sectionAlignment;
         std::uint32_t fileAlignment;
         std::uint16_t majorOSVersion;
         std::uint16_t minorOSVersion;
@@ -214,6 +215,8 @@ private:
         std::uint16_t number;
     };
 
+    struct PESectionMan;
+
     struct PESection
     {
         PESection( void );
@@ -221,9 +224,9 @@ private:
         PESection( PESection&& right )
             : shortName( std::move( right.shortName ) ), virtualSize( std::move( right.virtualSize ) ),
               virtualAddr( std::move( right.virtualAddr ) ), relocations( std::move( right.relocations ) ),
-              linenumbers( std::move( linenumbers ) ), chars( std::move( right.chars ) ),
+              linenumbers( std::move( right.linenumbers ) ), chars( std::move( right.chars ) ),
               isFinal( std::move( right.isFinal ) ), dataAlloc( std::move( right.dataAlloc ) ),
-              streamAllocMan( std::move( right.streamAllocMan ) ), stream( std::move( stream ) ),
+              streamAllocMan( std::move( right.streamAllocMan ) ), stream( std::move( right.stream ) ),
               placedOffsets( std::move( right.placedOffsets ) ), RVAreferalList( std::move( right.RVAreferalList ) )
         {
             // Since I have been writing this, how about a move constructor that allows
@@ -231,18 +234,43 @@ private:
 
             // We keep a list of RVAs that point to us, which needs updating.
             patchSectionPointers();
+
+            // If we belong to a PE image, we must move our node over.
+            moveFromOwnerImage( right );
         }
         ~PESection( void );
 
     private:
+        inline void moveFromOwnerImage( PESection& right )
+        {
+            PESectionMan *ownerImage = right.ownerImage;
+
+            if ( ownerImage )
+            {
+                this->sectionNode.moveFrom( std::move( right.sectionNode ) );
+
+                right.ownerImage = NULL;
+            }
+
+            this->ownerImage = ownerImage;
+        }
+
+        inline void unregisterOwnerImage( void )
+        {
+            if ( PESectionMan *ownerImage = this->ownerImage )
+            {
+                LIST_REMOVE( this->sectionNode );
+
+                this->ownerImage = NULL;
+            }
+        }
+
         inline void patchSectionPointers( void )
         {
             // First we want to fix the allocations that have been made on this section.
-            LIST_FOREACH_BEGIN( sectionSpaceAlloc_t::block_t, this->dataAlloc.blockList.root, node )
+            LIST_FOREACH_BEGIN( PESectionAllocation, this->dataAllocList.root, sectionNode )
 
-                PESectionAllocation *allocInfo = PESectionAllocation::GetSectionAllocationFromAllocBlock( item );
-
-                allocInfo->theSection = this;
+                item->theSection = this;
 
             LIST_FOREACH_END
 
@@ -275,6 +303,15 @@ private:
             this->RVAreferalList = std::move( right.RVAreferalList );
 
             patchSectionPointers();
+
+            // Update PE image.
+            {
+                // Make sure we long to no more PE image anymore
+                unregisterOwnerImage(),
+
+                // Set us into the new owner image.
+                moveFromOwnerImage( right );
+            }
 
             return *this;
         }
@@ -372,6 +409,9 @@ private:
                     {
                         this->sectionBlock.moveFrom( std::move( right.sectionBlock ) );
                     }
+
+                    // Add to general allocation list.
+                    this->sectionNode.moveFrom( std::move( right.sectionNode ) );
                 }
 
                 // Invalidate the old section.
@@ -390,6 +430,9 @@ private:
                         // Block remove.
                         sect->dataAlloc.RemoveBlock( &this->sectionBlock );
                     }
+
+                    // General list remove.
+                    LIST_REMOVE( this->sectionNode );
 
                     this->theSection = NULL;
                 }
@@ -430,6 +473,9 @@ private:
 
             sectionSpaceAlloc_t::block_t sectionBlock;
 
+            RwListEntry <PESectionAllocation> sectionNode;  // despite having a collision-based list node we need a general node aswell.
+
+            // This method is not required anymore.
             inline static PESectionAllocation* GetSectionAllocationFromAllocBlock( sectionSpaceAlloc_t::block_t *block )
             {
                 return (PESectionAllocation*)( (char*)block - offsetof(PESectionAllocation, sectionBlock) );
@@ -445,6 +491,10 @@ private:
         // If we are final, we DO NOT keep a list of allocations.
         // Otherwise we keep a collisionless struct of allocations we made.
         sectionSpaceAlloc_t dataAlloc;
+
+        // List which contains unordered allocated chunks, mostly useful for
+        // final sections.
+        RwList <PESectionAllocation> dataAllocList;
 
         inline bool IsEmpty( void ) const
         {
@@ -462,7 +512,6 @@ private:
         // Writing and possibly reading from this data section
         // should be done through this memory stream.
         BasicMemStream::basicMemStreamAllocMan <std::int32_t> streamAllocMan;
-
 public:
         typedef BasicMemStream::basicMemoryBufferStream <std::int32_t> memStream;
 
@@ -531,10 +580,189 @@ public:
         // API to register RVAs for commit phase.
         void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset );
         void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo );
+
+        // Call just before placing into image.
+        void Finalize( void );
+
+        // Node into the list of sections in a PESectionMan.
+        RwListEntry <PESection> sectionNode;
+        PESectionMan *ownerImage;
     };
     using PESectionAllocation = PESection::PESectionAllocation;
 
-    std::vector <PESection> sections;
+private:
+    struct PESectionMan
+    {
+        PESectionMan( std::uint32_t sectionAlignment );
+        PESectionMan( const PESectionMan& right ) = delete;
+        PESectionMan( PESectionMan&& right ) = default;
+        ~PESectionMan( void );
+
+        PESectionMan& operator = ( const PESectionMan& right ) = delete;
+        PESectionMan& operator = ( PESectionMan&& right ) = default;
+
+        // Private section management API.
+        PESection* AddSection( PESection&& theSection );
+        PESection* PlaceSection( PESection&& theSection );
+        bool RemoveSection( PESection *section );
+
+        std::uint32_t GetSectionAlignment( void )       { return this->sectionAlignment; }
+
+        inline std::uint32_t GetImageSize( void )
+        {
+            std::uint32_t unalignedMemImageEndOffMax = sectAllocSemantics::GetSpanSize( sectVirtualAllocMan );
+
+            return ALIGN_SIZE( unalignedMemImageEndOffMax, this->sectionAlignment );
+        }
+
+        // Function to get a data pointer of data directories.
+        inline const void* GetPEDataPointer(
+            std::uint64_t virtAddr, std::uint64_t virtSize,
+            PESection **allocSectOut = NULL
+        )
+        {
+            typedef sliceOfData <std::uint64_t> memSlice_t;
+
+            // Create a memory slice of the request.
+            memSlice_t requestRegion( virtAddr, virtSize );
+
+            LIST_FOREACH_BEGIN( PESection, this->sectionList.root, sectionNode )
+        
+                // Create a memory slice of this section.
+                std::uint64_t sectAddr, sectSize;
+                {
+                    sectAddr = item->virtualAddr;
+                    sectSize = item->stream.Size();
+                }
+
+                memSlice_t sectRegion( sectAddr, sectSize );
+
+                // Our memory request has to be entirely inside of a section.
+                memSlice_t::eIntersectionResult intResult = requestRegion.intersectWith( sectRegion );
+
+                if ( intResult == memSlice_t::INTERSECT_INSIDE ||
+                     intResult == memSlice_t::INTERSECT_EQUAL )
+                {
+                    if ( allocSectOut )
+                    {
+                        *allocSectOut = item;
+                    }
+
+                    // OK. We return a pointer into this section.
+                    return ( (const char*)item->stream.Data() + ( virtAddr - sectAddr ) );
+                }
+        
+            LIST_FOREACH_END
+
+            // Not found.
+            return NULL;
+        }
+
+    private:
+        std::uint32_t sectionAlignment;
+
+        struct sectVirtualAllocMan_t
+        {
+            AINLINE sectVirtualAllocMan_t( void ) = default;
+            AINLINE sectVirtualAllocMan_t( const sectVirtualAllocMan_t& right ) = delete;
+            AINLINE sectVirtualAllocMan_t( sectVirtualAllocMan_t&& right ) = default;
+
+            AINLINE sectVirtualAllocMan_t& operator = ( const sectVirtualAllocMan_t& right ) = delete;
+            AINLINE sectVirtualAllocMan_t& operator = ( sectVirtualAllocMan_t&& right ) = default;
+
+            typedef sliceOfData <decltype(PESection::virtualAddr)> memSlice_t;
+
+            struct blockIter_t
+            {
+                AINLINE blockIter_t( void )
+                {
+                    return;
+                }
+
+                AINLINE blockIter_t( RwListEntry <PESection>& node )
+                {
+                    this->node_iter = &node;
+                }
+
+                AINLINE void Increment( void )
+                {
+                    this->node_iter = this->node_iter->next;
+                }
+
+                AINLINE memSlice_t GetMemorySlice( void )
+                {
+                    PESection *sect = LIST_GETITEM( PESection, this->node_iter, sectionNode );
+
+                    return memSlice_t( sect->virtualAddr, sect->virtualSize );
+                }
+
+                RwListEntry <PESection> *node_iter;
+            };
+
+            AINLINE PESectionMan* GetManager( void )
+            {
+                return (PESectionMan*)( this - offsetof(PESectionMan, sectVirtualAllocMan) );
+            }
+
+            AINLINE blockIter_t GetFirstMemoryBlock( void )
+            {
+                return ( *GetManager()->sectionList.root.next );
+            }
+
+            AINLINE blockIter_t GetLastMemoryBlock( void )
+            {
+                return ( *GetManager()->sectionList.root.prev );
+            }
+
+            AINLINE bool HasMemoryBlocks( void )
+            {
+                return ( LIST_EMPTY( GetManager()->sectionList.root ) == false );
+            }
+
+            AINLINE blockIter_t GetRootNode( void )
+            {
+                return ( GetManager()->sectionList.root );
+            }
+
+            AINLINE blockIter_t GetAppendNode( blockIter_t iter )
+            {
+                return iter;
+            }
+
+            AINLINE bool IsEndMemoryBlock( const blockIter_t& iter )
+            {
+                return ( iter.node_iter == &GetManager()->sectionList.root );
+            }
+
+            AINLINE bool IsInAllocationRange( const memSlice_t& memRegion )
+            {
+                const memSlice_t peFileRegion( 0, std::numeric_limits <std::int32_t>::max() );
+
+                memSlice_t::eIntersectionResult intResult = memRegion.intersectWith( peFileRegion );
+
+                return ( intResult == memSlice_t::INTERSECT_EQUAL || intResult == memSlice_t::INTERSECT_INSIDE );
+            }
+        };
+
+        sectVirtualAllocMan_t sectVirtualAllocMan;
+
+        typedef FirstPassAllocationSemantics <decltype(PESection::virtualAddr), sectVirtualAllocMan_t> sectAllocSemantics;
+
+    public:
+        unsigned int numSections;
+
+        RwList <PESection> sectionList;     // all sections belong to a PEFile MUST have a valid allocation spot.
+    };
+
+    PESectionMan sections;
+
+public:
+    // Generic section management API.
+    PESection* AddSection( PESection&& theSection );
+    PESection* PlaceSection( PESection&& theSection );
+    PESection* FindFirstSectionByName( const char *name );
+    PESection* FindFirstAllocatableSection( void );
+    bool RemoveSection( PESection *section );
 
     // Data directory business.
     struct PEExportDir
@@ -889,50 +1117,7 @@ public:
     // Meta-data.
     bool is64Bit;
 
-    // Function to get a data pointer of data directories.
-    inline static const void* GetPEDataPointer(
-        std::vector <PESection>& sections,
-        std::uint64_t virtAddr, std::uint64_t virtSize,
-        PESection **allocSectOut = NULL
-    )
-    {
-        typedef sliceOfData <std::uint64_t> memSlice_t;
-
-        // Create a memory slice of the request.
-        memSlice_t requestRegion( virtAddr, virtSize );
-
-        for ( PESection& sect : sections )
-        {
-            // Create a memory slice of this section.
-            std::uint64_t sectAddr, sectSize;
-            {
-                sectAddr = sect.virtualAddr;
-                sectSize = sect.stream.Size();
-            }
-
-            memSlice_t sectRegion( sectAddr, sectSize );
-
-            // Our memory request has to be entirely inside of a section.
-            memSlice_t::eIntersectionResult intResult = requestRegion.intersectWith( sectRegion );
-
-            if ( intResult == memSlice_t::INTERSECT_INSIDE ||
-                 intResult == memSlice_t::INTERSECT_EQUAL )
-            {
-                if ( allocSectOut )
-                {
-                    *allocSectOut = &sect;
-                }
-
-                // OK. We return a pointer into this section.
-                return ( (const char*)sect.stream.Data() + ( virtAddr - sectAddr ) );
-            }
-        }
-
-        // Not found.
-        return NULL;
-    }
-
-    inline static PEResourceDir LoadResourceDirectory( const void *resRootDir, std::vector <PESection>& sections, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY *serResDir )
+    inline static PEResourceDir LoadResourceDirectory( PESectionMan& sections, const void *resRootDir, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY *serResDir )
     {
         using namespace PEStructures;
 
@@ -965,7 +1150,7 @@ public:
                 if ( !subDirData )
                     throw std::exception( "invalid PE resource directory data" );
 
-                PEResourceDir subDir = LoadResourceDirectory( resRootDir, sections, std::move( nameOfItem ), subDirData );
+                PEResourceDir subDir = LoadResourceDirectory( sections, resRootDir, std::move( nameOfItem ), subDirData );
 
                 PEResourceDir *subDirItem = new PEResourceDir( std::move( subDir ) );
 
@@ -1043,16 +1228,13 @@ public:
         return curDir;
     }
 
+private:
     // Helper functions to off-load the duty work from the main
     // serialization function.
     std::uint16_t GetPENativeFileFlags( void );
     std::uint16_t GetPENativeDLLOptFlags( void );
 
-    // Generic section management API.
-    PESection* FindFirstSectionByName( const char *name );
-    PESection* FindFirstAllocatableSection( void );
-    bool RemoveSection( PESection *section );
-
+public:
     void CommitDataDirectories( void );
 };
 

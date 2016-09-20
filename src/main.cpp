@@ -27,7 +27,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        std::unique_ptr <CFile> filePtr( fileRoot->Open( "kernel32.dll", "rb" ) );
+        std::unique_ptr <CFile> filePtr( fileRoot->Open( "gta_sa.exe", "rb" ) );
 
         if ( filePtr )
         {
@@ -35,9 +35,21 @@ int main( int argc, char *argv[] )
 
             filedata.LoadFromDisk( filePtr.get() );
 
+            // Decide on the PE image type what output filename we should pick.
+            const char *outFileName;
+
+            if ( filedata.IsDynamicLinkLibrary() )
+            {
+                outFileName = "out.dll";
+            }
+            else
+            {
+                outFileName = "out.exe";
+            }
+
             // Write it to another location.
             // This is a test that we can 1:1 convert executables.
-            std::unique_ptr <CFile> outFilePtr( fileRoot->Open( "out.exe", "wb" ) );
+            std::unique_ptr <CFile> outFilePtr( fileRoot->Open( outFileName, "wb" ) );
 
             if ( outFilePtr )
             {

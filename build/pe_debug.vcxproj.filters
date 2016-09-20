@@ -8,4 +8,7 @@
     <ClInclude Include="..\src\StdInc.h" />
     <ClInclude Include="..\src\peloader.h" />
   </ItemGroup>
+  <ItemGroup>
+    <Natvis Include="peloader.natvis" />
+  </ItemGroup>
 </Project>
