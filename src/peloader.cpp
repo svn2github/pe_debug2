@@ -2301,7 +2301,7 @@ PEFile::PESection* PEFile::PESectionMan::AddSection( PESection&& theSection )
     // based on sectionAlignment.
     const std::uint32_t sectionAlignment = this->sectionAlignment;
 
-    std::uint32_t alignedSectionSize = AsLIGN_SIZE( theSection.virtualSize, sectionAlignment );
+    std::uint32_t alignedSectionSize = ALIGN_SIZE( theSection.virtualSize, sectionAlignment );
 
     // We allocate space for this section inside of our executable.
     sectAllocSemantics::allocInfo allocInfo;
