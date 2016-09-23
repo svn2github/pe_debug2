@@ -1,6 +1,8 @@
 #include "StdInc.h"
 #include <memory>
 
+#include <winternl.h>
+
 #include <assert.h>
 
 #include <CFileSystem.h>
@@ -27,7 +29,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        std::unique_ptr <CFile> filePtr( fileRoot->Open( "gta_sa.exe", "rb" ) );
+        std::unique_ptr <CFile> filePtr( fileRoot->Open( "pe_debug.exe", "rb" ) );
 
         if ( filePtr )
         {

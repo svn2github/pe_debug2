@@ -591,9 +591,126 @@ public:
     using PESectionAllocation = PESection::PESectionAllocation;
 
 private:
+    // Data inside of a PE file is stored in sections which have special
+    // rules if they ought to be "zero padded".
+    struct PEDataStream
+    {
+        inline PEDataStream( void )
+        {
+            this->accessSection = NULL;
+            this->dataOffset = 0;
+            this->seek_off = 0;
+        }
+
+        inline PEDataStream( PESection *theSection, std::uint32_t dataOffset )
+        {
+            this->accessSection = theSection;
+            this->dataOffset = dataOffset;
+            this->seek_off = 0;
+        }
+
+        inline void Seek( std::uint32_t offset )
+        {
+            this->seek_off = offset;
+        }
+
+        inline std::uint32_t Tell( void )
+        {
+            return this->seek_off;
+        }
+
+        inline void Read( void *dataBuf, std::uint32_t readCount )
+        {
+            PESection *theSection = this->accessSection;
+
+            if ( !theSection )
+                throw std::exception( "attempt to read from invalid PE data stream" );
+
+            typedef sliceOfData <std::uint32_t> sectionSlice_t;
+
+            // Get the slice of the present data.
+            const std::uint32_t sectVirtualAddr = theSection->virtualAddr;
+            const std::uint32_t sectVirtualSize = theSection->virtualSize;
+
+            sectionSlice_t dataSlice( 0, theSection->stream.Size() );
+
+            // Get the slice of the zero padding.
+            const std::uint32_t validEndPoint = ( sectVirtualSize );
+
+            sectionSlice_t zeroSlice = sectionSlice_t::fromOffsets( dataSlice.GetSliceEndPoint() + 1, validEndPoint );
+
+            // Now the slice of our read operation.
+            sectionSlice_t opSlice( ( this->dataOffset + this->seek_off ), readCount );
+
+            // Begin output to buffer operations.
+            char *outputPtr = (char*)dataBuf;
+
+            std::uint32_t totalReadCount = 0;
+
+            // First return the amount of data that was requested, if it counts.
+            sectionSlice_t retDataSlice;
+
+            if ( opSlice.getSharedRegion( dataSlice, retDataSlice ) )
+            {
+                std::uint32_t numReadData = retDataSlice.GetSliceSize();
+
+                const void *srcDataPtr = ( (const char*)theSection->stream.Data() + retDataSlice.GetSliceStartPoint() );
+
+                memcpy( outputPtr, srcDataPtr, numReadData );
+
+                outputPtr += numReadData;
+
+                totalReadCount += numReadData;
+            }
+
+            // Next see if we have to return any zeroes.
+            if ( opSlice.getSharedRegion( zeroSlice, retDataSlice ) )
+            {
+                std::uint32_t numZeroes = retDataSlice.GetSliceSize();
+
+                memset( outputPtr, 0, numZeroes );
+
+                outputPtr += numZeroes;
+
+                totalReadCount += numZeroes;
+            }
+
+            this->seek_off += readCount;
+
+            if ( totalReadCount != readCount )
+            {
+                throw std::exception( "PE file out-of-bounds section read exception" );
+            }
+        }
+
+    private:
+        PESection *accessSection;
+        std::uint32_t dataOffset;
+        std::uint32_t seek_off;
+    };
+
+    template <typename charType>
+    inline static void ReadPEString(
+        PEDataStream& stream, std::basic_string <charType>& strOut
+    )
+    {
+        while ( true )
+        {
+            charType c;
+            stream.Read( &c, sizeof(c) );
+
+            if ( c == '\0' )
+            {
+                break;
+            }
+
+            strOut += c;
+        }
+    }
+
     struct PESectionMan
     {
-        PESectionMan( std::uint32_t sectionAlignment );
+        PESectionMan( std::uint32_t sectionAlignment, std::uint32_t imageBase );
         PESectionMan( const PESectionMan& right ) = delete;
         PESectionMan( PESectionMan&& right ) = default;
         ~PESectionMan( void );
@@ -607,6 +724,7 @@ private:
         bool RemoveSection( PESection *section );
 
         std::uint32_t GetSectionAlignment( void )       { return this->sectionAlignment; }
+        std::uint32_t GetImageBase( void )              { return this->imageBase; }
 
         inline std::uint32_t GetImageSize( void )
         {
@@ -616,50 +734,93 @@ private:
         }
 
         // Function to get a data pointer of data directories.
-        inline const void* GetPEDataPointer(
-            std::uint64_t virtAddr, std::uint64_t virtSize,
+        inline bool GetPEDataStream(
+            std::uint64_t virtAddr, PEDataStream& streamOut,
             PESection **allocSectOut = NULL
         )
         {
             typedef sliceOfData <std::uint64_t> memSlice_t;
 
             // Create a memory slice of the request.
-            memSlice_t requestRegion( virtAddr, virtSize );
+            memSlice_t requestRegion( virtAddr, 1 );
 
             LIST_FOREACH_BEGIN( PESection, this->sectionList.root, sectionNode )
         
-                // Create a memory slice of this section.
-                std::uint64_t sectAddr, sectSize;
+                // We only support that for sections whose data is figured out already.
+                if ( item->isFinal )
                 {
-                    sectAddr = item->virtualAddr;
-                    sectSize = item->stream.Size();
-                }
-
-                memSlice_t sectRegion( sectAddr, sectSize );
-
-                // Our memory request has to be entirely inside of a section.
-                memSlice_t::eIntersectionResult intResult = requestRegion.intersectWith( sectRegion );
-
-                if ( intResult == memSlice_t::INTERSECT_INSIDE ||
-                     intResult == memSlice_t::INTERSECT_EQUAL )
-                {
-                    if ( allocSectOut )
+                    // Create a memory slice of this section.
+                    std::uint64_t sectAddr, sectSize;
                     {
-                        *allocSectOut = item;
+                        sectAddr = item->virtualAddr;
+                        sectSize = item->virtualSize;
                     }
 
-                    // OK. We return a pointer into this section.
-                    return ( (const char*)item->stream.Data() + ( virtAddr - sectAddr ) );
+                    memSlice_t sectRegion( sectAddr, sectSize );
+
+                    // Our memory request has to be entirely inside of a section.
+                    memSlice_t::eIntersectionResult intResult = requestRegion.intersectWith( sectRegion );
+
+                    if ( intResult == memSlice_t::INTERSECT_INSIDE ||
+                         intResult == memSlice_t::INTERSECT_EQUAL )
+                    {
+                        if ( allocSectOut )
+                        {
+                            *allocSectOut = item;
+                        }
+
+                        // OK. We return a stream into this section.
+                        std::uint32_t offsetIntoSect = (uint32_t)( virtAddr - sectAddr );
+
+                        streamOut = PEDataStream( item, offsetIntoSect );
+                        return true;
+                    }
                 }
         
             LIST_FOREACH_END
 
             // Not found.
-            return NULL;
+            return false;
+        }
+
+        inline bool ReadPEData(
+            std::uint32_t dataOffset, std::uint32_t dataSize,
+            void *dataBuf, PESection **sectionOut
+        )
+        {
+            PEDataStream stream;
+
+            bool gotData = GetPEDataStream( dataOffset, stream, sectionOut );
+
+            if ( !gotData )
+            {
+                return false;
+            }
+
+            stream.Read( dataBuf, dataSize );
+
+            return true;
+        }
+
+        inline bool ReadPEString(
+            std::uint32_t dataOffset, std::string& strOut,
+            PESection **sectionOut
+        )
+        {
+            PEDataStream stream;
+
+            bool gotData = GetPEDataStream( dataOffset, stream, sectionOut );
+
+            if ( !gotData )
+                return false;
+
+            PEFile::ReadPEString( stream, strOut );
+            return true;
         }
 
     private:
         std::uint32_t sectionAlignment;
+        std::uint32_t imageBase;
 
         struct sectVirtualAllocMan_t
         {
@@ -1117,40 +1278,37 @@ public:
     // Meta-data.
     bool is64Bit;
 
-    inline static PEResourceDir LoadResourceDirectory( PESectionMan& sections, const void *resRootDir, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY *serResDir )
+    inline static PEResourceDir LoadResourceDirectory( PESectionMan& sections, PEDataStream& rootStream, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY& serResDir )
     {
         using namespace PEStructures;
 
         PEResourceDir curDir( std::move( nameOfDir ) );
 
         // Store general details.
-        curDir.characteristics = serResDir->Characteristics;
-        curDir.timeDateStamp = serResDir->TimeDateStamp;
-        curDir.majorVersion = serResDir->MajorVersion;
-        curDir.minorVersion = serResDir->MinorVersion;
+        curDir.characteristics = serResDir.Characteristics;
+        curDir.timeDateStamp = serResDir.TimeDateStamp;
+        curDir.majorVersion = serResDir.MajorVersion;
+        curDir.minorVersion = serResDir.MinorVersion;
 
         // Read sub entries.
         // Those are planted directly after the directory.
-        std::uint16_t numNamedEntries = serResDir->NumberOfNamedEntries;
-        std::uint16_t numIDEntries = serResDir->NumberOfIdEntries;
-
-        const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY *dirEntries =
-            (const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY*)( serResDir + 1 );
+        std::uint16_t numNamedEntries = serResDir.NumberOfNamedEntries;
+        std::uint16_t numIDEntries = serResDir.NumberOfIdEntries;
 
         // Function to read the data behind a resource directory entry.
         auto resDataParser = [&]( std::wstring nameOfItem, const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY& entry ) -> PEResourceItem*
         {
+            // Seek to this data entry.
+            rootStream.Seek( entry.OffsetToData );
+
             // Are we a sub-directory or an actual data leaf?
             if ( entry.DataIsDirectory )
             {
                 // Get the sub-directory structure.
-                const PEStructures::IMAGE_RESOURCE_DIRECTORY *subDirData =
-                    (const PEStructures::IMAGE_RESOURCE_DIRECTORY*)( (const char*)resRootDir + entry.OffsetToDirectory );
+                PEStructures::IMAGE_RESOURCE_DIRECTORY subDirData;
+                rootStream.Read( &subDirData, sizeof(subDirData) );
 
-                if ( !subDirData )
-                    throw std::exception( "invalid PE resource directory data" );
-
-                PEResourceDir subDir = LoadResourceDirectory( sections, resRootDir, std::move( nameOfItem ), subDirData );
+                PEResourceDir subDir = LoadResourceDirectory( sections, rootStream, std::move( nameOfItem ), subDirData );
 
                 PEResourceDir *subDirItem = new PEResourceDir( std::move( subDir ) );
 
@@ -1158,19 +1316,16 @@ public:
             }
             else
             {
-                // Read the data leaf.
-                const PEStructures::IMAGE_RESOURCE_DATA_ENTRY *itemData =
-                    (const PEStructures::IMAGE_RESOURCE_DATA_ENTRY*)( (const char*)resRootDir + entry.OffsetToData );
-
-                if ( !itemData )
-                    throw std::exception( "invalid PE resource item data" );
+                // Get the data leaf.
+                PEStructures::IMAGE_RESOURCE_DATA_ENTRY itemData;
+                rootStream.Read( &itemData, sizeof(itemData) );
 
                 // We dont have to recurse anymore.
                 PEResourceInfo resItem( std::move( nameOfItem ) );
-                resItem.dataOffset = itemData->OffsetToData;
-                resItem.dataSize = itemData->Size;
-                resItem.codePage = itemData->CodePage;
-                resItem.reserved = itemData->Reserved;
+                resItem.dataOffset = itemData.OffsetToData;
+                resItem.dataSize = itemData.Size;
+                resItem.codePage = itemData.CodePage;
+                resItem.reserved = itemData.Reserved;
 
                 PEResourceInfo *resItemPtr = new PEResourceInfo( std::move( resItem ) );
 
@@ -1180,23 +1335,27 @@ public:
 
         curDir.children.reserve( numNamedEntries + numIDEntries );
 
+        // Due to us using only one PEDataStream we need to seek to all our entries properly.
+        std::uint32_t subDirStartOff = rootStream.Tell();
+
         for ( size_t n = 0; n < numNamedEntries; n++ )
         {
-            const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY& namedEntry = dirEntries[ n ];
+            rootStream.Seek( subDirStartOff + n * sizeof(PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY) );
+
+            PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY namedEntry;
+            rootStream.Read( &namedEntry, sizeof(namedEntry) );
 
             if ( namedEntry.NameIsString == false )
-                throw std::exception( "invalid PE resource directory named entry" );
+            {
+                throw std::exception( "invalid PE resource directory entry: expected named entry" );
+            }
 
             // Load the name.
             std::wstring nameOfItem;
             {
-                const PEStructures::IMAGE_RESOURCE_DIR_STRING_U *strEntry =
-                    (const PEStructures::IMAGE_RESOURCE_DIR_STRING_U*)( (const char*)resRootDir + namedEntry.NameOffset );
+                rootStream.Seek( namedEntry.NameOffset );
 
-                if ( !strEntry )
-                    throw std::exception( "invalid PE resource directory string" );
-
-                nameOfItem = std::wstring( strEntry->NameString, strEntry->Length );
+                ReadPEString( rootStream, nameOfItem );
             }
 
             // Create a resource item.
@@ -1210,7 +1369,10 @@ public:
 
         for ( size_t n = 0; n < numIDEntries; n++ )
         {
-            const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY& idEntry = dirEntries[ numNamedEntries + n ];
+            rootStream.Seek( subDirStartOff + ( n + numNamedEntries ) * sizeof(PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY) );
+            
+            PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY idEntry;
+            rootStream.Read( &idEntry, sizeof(idEntry) );
 
             if ( idEntry.NameIsString == true )
                 throw std::exception( "invalid PE resource directory ID entry" );

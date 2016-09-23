@@ -10,7 +10,7 @@
 #define NOMINMAX
 #include <Windows.h>
 
-PEFile::PEFile( void ) : resourceRoot( std::wstring() ), sections( 0x1000 )
+PEFile::PEFile( void ) : resourceRoot( std::wstring() ), sections( 0x1000, 0x10000 )
 {
     this->is64Bit = false;
 }
@@ -364,7 +364,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     }
 
     // Should handle data sections first because data directories depend on them.
-    PESectionMan sections( sectionAlignment );
+    PESectionMan sections( sectionAlignment, peOpt.baseOfCode );
 
     for ( size_t n = 0; n < numSections; n++ )
     {
@@ -510,14 +510,15 @@ void PEFile::LoadFromDisk( CFile *peStream )
         {
             PESection *expDirSect;
 
-            const IMAGE_EXPORT_DIRECTORY *expDirPtr = (const IMAGE_EXPORT_DIRECTORY*)sections.GetPEDataPointer( expDirEntry.VirtualAddress, expDirEntry.Size, &expDirSect );
+            IMAGE_EXPORT_DIRECTORY expEntry;
+            {
+                bool gotData = sections.ReadPEData( expDirEntry.VirtualAddress, sizeof(expEntry), &expEntry, &expDirSect );
 
-            if ( !expDirPtr )
-                throw std::exception( "invalid PE export directory" );
+                if ( !gotData )
+                    throw std::exception( "invalid PE export directory" );
+            }
 
             expDirSect->SetPlacedMemory( expInfo.allocEntry, expDirEntry.VirtualAddress, expDirEntry.Size );
-
-            const IMAGE_EXPORT_DIRECTORY& expEntry = *expDirPtr;
 
             // Store the usual tidbits.
             expInfo.chars = expEntry.Characteristics;
@@ -530,15 +531,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             // Read the name.
             PESection *sectOfName;
+            {
+                bool gotName = sections.ReadPEString( expEntry.Name, expInfo.name, &sectOfName );
 
-            const char *nameOffset = (const char*)sections.GetPEDataPointer( expEntry.Name, 1, &sectOfName );
-
-            if ( !nameOffset )
-                throw std::exception( "failed to read PE export directory name" );
+                if ( !gotName )
+                    throw std::exception( "failed to read PE export directory name" );
+            }
 
             sectOfName->SetPlacedMemory( expInfo.nameAllocEntry, expEntry.Name );
-
-            expInfo.name = nameOffset;
 
             // Allocate functions.
             if ( expEntry.AddressOfFunctions != 0 )
@@ -556,18 +556,19 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 {
                     tabSize = ( sizeof( DWORD ) * expEntry.NumberOfFunctions );
                 }
-
+                
                 PESection *addrPtrSect;
-
-                const void *addrPtr =
-                    sections.GetPEDataPointer(
-                        expEntry.AddressOfFunctions, tabSize,
+                PEDataStream addrPtrStream;
+                {
+                    bool gotStream = sections.GetPEDataStream(
+                        expEntry.AddressOfFunctions, addrPtrStream,
                         &addrPtrSect
                     );
 
-                if ( !addrPtr )
-                {
-                    throw std::exception( "failed to get PE export info function entries" );
+                    if ( !gotStream )
+                    {
+                        throw std::exception( "failed to get PE export info function entries" );
+                    }
                 }
 
                 addrPtrSect->SetPlacedMemory( expInfo.funcAddressAllocEntry, expEntry.AddressOfFunctions );
@@ -579,26 +580,31 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                     bool isForwarder;
                     {
-                        DWORD ptr = *( (const DWORD*)addrPtr + n );
+                        DWORD ptr;
+                        addrPtrStream.Read( &ptr, sizeof(ptr) );
 
                         // Determine if we are a forwarder or an export.
-                        typedef sliceOfData <DWORD> rvaSlice_t;
+                        {
+                            typedef sliceOfData <DWORD> rvaSlice_t;
 
-                        rvaSlice_t requestSlice( ptr, 1 );
+                            rvaSlice_t requestSlice( ptr, 1 );
 
-                        rvaSlice_t expDirSlice( expDirEntry.VirtualAddress, expDirEntry.Size );
+                            rvaSlice_t expDirSlice( expDirEntry.VirtualAddress, expDirEntry.Size );
 
-                        rvaSlice_t::eIntersectionResult intResult = requestSlice.intersectWith( expDirSlice );
+                            rvaSlice_t::eIntersectionResult intResult = requestSlice.intersectWith( expDirSlice );
 
-                        isForwarder = ( rvaSlice_t::isFloatingIntersect( intResult ) == false );
+                            isForwarder = ( rvaSlice_t::isFloatingIntersect( intResult ) == false );
+                        }
 
                         // Store properties according to the type.
                         PESection *exportOffPtrSect;
+                        PEDataStream expOffStream;
+                        {
+                            bool gotStream = sections.GetPEDataStream( ptr, expOffStream, &exportOffPtrSect );
 
-                        const void *expOffPtr = sections.GetPEDataPointer( ptr, 1, &exportOffPtrSect );
-
-                        if ( !expOffPtr )
-                            throw std::exception( "failed to get PE export offset pointer" );
+                            if ( !gotStream )
+                                throw std::exception( "failed to get PE export offset pointer" );
+                        }
 
                         // We store the location of the data entry, but NOTE that
                         // this behavior NEVER is an allocation!
@@ -620,9 +626,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                         if ( isForwarder )
                         {
-                            const char *forwNamePtr = (const char*)expOffPtr;
-
-                            fentry.forwarder = forwNamePtr;
+                            ReadPEString( expOffStream, fentry.forwarder );
                         }
                     }
                     fentry.isForwarder = isForwarder;
@@ -635,29 +639,36 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 {
                     // Establish name ptr array.
                     PESection *addrNamesSect;
+                    PEDataStream addrNamesStream;
+                    {
+                        bool gotStream = sections.GetPEDataStream( expEntry.AddressOfNames, addrNamesStream, &addrNamesSect );
 
-                    const DWORD *namePtrs = (const DWORD*)sections.GetPEDataPointer( expEntry.AddressOfNames, expEntry.NumberOfNames * sizeof(DWORD), &addrNamesSect );
-
-                    if ( !namePtrs )
-                        throw std::exception( "failed to get PE export directory function name list" );
+                        if ( !gotStream )
+                            throw std::exception( "failed to get PE export directory function name list" );
+                    }
 
                     addrNamesSect->SetPlacedMemory( expInfo.funcNamesAllocEntry, expEntry.AddressOfNames );
 
                     // Establish ordinal mapping array.
                     PESection *addrNameOrdSect;
-
-                    const WORD *ordPtr = (const WORD*)sections.GetPEDataPointer( expEntry.AddressOfNameOrdinals, expEntry.NumberOfNames * sizeof(WORD), &addrNameOrdSect );
-
-                    if ( !ordPtr )
-                        throw std::exception( "failed to get PE export directory function ordinals" );
+                    PEDataStream addrNameOrdStream;
+                    {
+                        bool gotStream = sections.GetPEDataStream( expEntry.AddressOfNameOrdinals, addrNameOrdStream, &addrNameOrdSect );
+                        
+                        if ( !gotStream )
+                            throw std::exception( "failed to get PE export directory function ordinals" );
+                    }
 
                     addrNameOrdSect->SetPlacedMemory( expInfo.funcOrdinalsAllocEntry, expEntry.AddressOfNameOrdinals );
 
                     // Map names to functions.
                     for ( DWORD n = 0; n < expEntry.NumberOfNames; n++ )
                     {
+                        WORD ordinal;
+                        addrNameOrdStream.Read( &ordinal, sizeof(ordinal) );
+
                         // Get the index to map the function name to (== ordinal).
-                        size_t mapIndex = ( ordPtr[ n ] - ordinalBase );
+                        size_t mapIndex = ( ordinal - ordinalBase );
 
                         if ( mapIndex >= funcs.size() )
                         {
@@ -668,15 +679,19 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         // Get the name we should map to.
                         PESection *realNamePtrSect;
 
-                        DWORD namePtr = namePtrs[ n ];
+                        DWORD namePtrRVA;
+                        addrNamesStream.Read( &namePtrRVA, sizeof(namePtrRVA) );
 
-                        // Retrieve the real name ptr.
-                        const char *realNamePtr = (const char*)sections.GetPEDataPointer( namePtr, 1, &realNamePtrSect );
+                        // Read the actual name.
+                        std::string realName;
+                        {
+                            bool gotString = sections.ReadPEString( namePtrRVA, realName, &realNamePtrSect );
 
-                        if ( !realNamePtr )
-                            throw std::exception( "failed to get PE export directory function name ptr" );
+                            if ( !gotString )
+                                throw std::exception( "failed to get PE export directory function name ptr" );
+                        }
 
-                        if ( *realNamePtr == '\0' )
+                        if ( realName.empty() )
                         {
                             // Kind of invalid.
                             throw std::exception( "invalid PE export name: empty string" );
@@ -691,10 +706,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
                             throw std::exception( "ambiguous PE export name mapping" );
                         }
 
-                        fentry.name = realNamePtr;
+                        fentry.name = std::move( realName );
                         fentry.isNamed = true;  // yes, we have a valid name!
 
-                        realNamePtrSect->SetPlacedMemory( fentry.nameAllocEntry, namePtr );
+                        realNamePtrSect->SetPlacedMemory( fentry.nameAllocEntry, namePtrRVA );
                     }
                 }
 
@@ -713,12 +728,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( impDir.VirtualAddress != 0 )
         {
             PESection *impDirSect;
+            PEDataStream importDescsStream;
+            {
+                bool gotStream = sections.GetPEDataStream( impDir.VirtualAddress, importDescsStream, &impDirSect );
 
-            const IMAGE_IMPORT_DESCRIPTOR *importDescs =
-                (const IMAGE_IMPORT_DESCRIPTOR*)sections.GetPEDataPointer( impDir.VirtualAddress, impDir.Size, &impDirSect );
-
-            if ( !importDescs )
-                throw std::exception( "failed to read PE import descriptors" );
+                if ( !gotStream )
+                    throw std::exception( "failed to read PE import descriptors" );
+            }
 
             impDirSect->SetPlacedMemory( this->importsAllocEntry, impDir.VirtualAddress, impDir.Size );
 
@@ -731,7 +747,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             while ( n++ < potentialNumDescriptors )
             {
-                const IMAGE_IMPORT_DESCRIPTOR& importInfo = importDescs[ n ];
+                IMAGE_IMPORT_DESCRIPTOR importInfo;
+                importDescsStream.Read( &importInfo, sizeof(importInfo) );
 
                 // TODO: allow secure bounded parsing of PE files, so we check for
                 // violations of PE rules and reject those files.
@@ -753,12 +770,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 if ( importInfo.Characteristics != 0 )
                 {
                     PESection *importNameArraySect;
+                    PEDataStream importNameArrayStream;
+                    {
+                        bool hasStream = sections.GetPEDataStream( importInfo.Characteristics, importNameArrayStream, &importNameArraySect );
 
-                    const void *importNameArray =
-                        (const void*)sections.GetPEDataPointer( importInfo.Characteristics, 1, &importNameArraySect );
-
-                    if ( !importNameArray )
-                        throw std::exception( "failed to read PE import function name array" );
+                        if ( !hasStream )
+                            throw std::exception( "failed to read PE import function name array" );
+                    }
                     
                     importNameArraySect->SetPlacedMemory( impDesc.impNameArrayAllocEntry, importInfo.Characteristics );
 
@@ -772,11 +790,17 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                         if ( is64Bit )
                         {
-                            importNameRVA = *( ( (const ULONGLONG*&)importNameArray )++ );
+                            ULONGLONG importNameRVA_read;
+                            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
+
+                            importNameRVA = importNameRVA_read;
                         }
                         else
                         {
-                            importNameRVA = *( ( (const DWORD*&)importNameArray )++ );
+                            DWORD importNameRVA_read;
+                            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
+
+                            importNameRVA = importNameRVA_read;
                         }
 
                         if ( !importNameRVA )
@@ -805,16 +829,23 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         else
                         {
                             PESection *importNameSect;
+                            PEDataStream importNameStream;
+                            {
+                                bool gotStream = sections.GetPEDataStream( (DWORD)importNameRVA, importNameStream, &importNameSect );
 
-                            const IMAGE_IMPORT_BY_NAME *importName = (const IMAGE_IMPORT_BY_NAME*)sections.GetPEDataPointer( (DWORD)importNameRVA, sizeof( IMAGE_IMPORT_BY_NAME ), &importNameSect );
-
-                            if ( !importName )
-                                throw std::exception( "failed to read PE import function name entry" );
+                                if ( !gotStream )
+                                    throw std::exception( "failed to read PE import function name entry" );
+                            }
 
                             importNameSect->SetPlacedMemory( funcInfo.nameAllocEntry, (DWORD)importNameRVA );
 
-                            funcInfo.ordinal_hint = importName->Hint;
-                            funcInfo.name = importName->Name;
+                            // Read stuff.
+                            WORD ordinal_hint;
+                            importNameStream.Read( &ordinal_hint, sizeof(ordinal_hint) );
+
+                            funcInfo.ordinal_hint = ordinal_hint;
+
+                            ReadPEString( importNameStream, funcInfo.name );
                         }
                         funcInfo.isOrdinalImport = isOrdinalImport;
                         
@@ -827,15 +858,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 // Store the DLL name we import from.
                 {
                     PESection *dllNameSect;
+                    {
+                        bool gotName = sections.ReadPEString( importInfo.Name, impDesc.DLLName, &dllNameSect );
 
-                    const char *dllNamePtr = (const char*)sections.GetPEDataPointer( importInfo.Name, 1, &dllNameSect );
-
-                    if ( !dllNamePtr )
-                        throw std::exception( "failed to read PE import desc DLL name" );
+                        if ( !gotName )
+                            throw std::exception( "failed to read PE import desc DLL name" );
+                    }
 
                     dllNameSect->SetPlacedMemory( impDesc.DLLName_allocEntry, importInfo.Name );
-
-                    impDesc.DLLName = dllNamePtr;
                 }
 
                 impDesc.firstThunkOffset = importInfo.FirstThunk;
@@ -859,15 +889,20 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( resDir.VirtualAddress != 0 )
         {
             PESection *resDataSect;
+            PEDataStream resDataStream;
+            {
+                bool gotStream = sections.GetPEDataStream( resDir.VirtualAddress, resDataStream, &resDataSect );
 
-            const PEStructures::IMAGE_RESOURCE_DIRECTORY *resRootDir = (const PEStructures::IMAGE_RESOURCE_DIRECTORY*)sections.GetPEDataPointer( resDir.VirtualAddress, resDir.Size, &resDataSect );
-
-            if ( !resRootDir )
-                throw std::exception( "invalid PE resource root" );
+                if ( !gotStream )
+                    throw std::exception( "invalid PE resource root" );
+            }
 
             resDataSect->SetPlacedMemory( this->resAllocEntry, resDir.VirtualAddress, resDir.Size );
 
-            resourceRoot = LoadResourceDirectory( sections, resRootDir, std::wstring(), resRootDir );
+            PEStructures::IMAGE_RESOURCE_DIRECTORY resDir;
+            resDataStream.Read( &resDir, sizeof(resDir) );
+
+            resourceRoot = LoadResourceDirectory( sections, resDataStream, std::wstring(), resDir );
         }
     }
 
@@ -883,11 +918,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
             // (currently we specialize on x86/AMD64)
 
             PESection *rtFuncsSect;
+            PEDataStream rtFuncsStream;
+            {
+                bool gotStream = sections.GetPEDataStream( rtDir.VirtualAddress, rtFuncsStream, &rtFuncsSect );
 
-            const IMAGE_RUNTIME_FUNCTION_ENTRY *rtFuncs = (const IMAGE_RUNTIME_FUNCTION_ENTRY*)sections.GetPEDataPointer( rtDir.VirtualAddress, rtDir.Size, &rtFuncsSect );
-
-            if ( !rtFuncs )
-                throw std::exception( "invalid PE exception directory" );
+                if ( !gotStream )
+                    throw std::exception( "invalid PE exception directory" );
+            }
 
             rtFuncsSect->SetPlacedMemory( this->exceptAllocEntry, rtDir.VirtualAddress, rtDir.Size );
 
@@ -897,7 +934,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             for ( size_t n = 0; n < numFuncs; n++ )
             {
-                const IMAGE_RUNTIME_FUNCTION_ENTRY& func = rtFuncs[ n ];
+                IMAGE_RUNTIME_FUNCTION_ENTRY func;
+                rtFuncsStream.Read( &func, sizeof(func) );
 
                 PERuntimeFunction funcInfo;
                 funcInfo.beginAddr = func.BeginAddress;
@@ -929,24 +967,31 @@ void PEFile::LoadFromDisk( CFile *peStream )
             const DWORD sizeRelocations = baserelocDir.Size;
 
             PESection *baseRelocDescsSect;
+            PEDataStream baseRelocDescsStream;
+            {
+                bool gotStream = sections.GetPEDataStream( baserelocDir.VirtualAddress, baseRelocDescsStream, &baseRelocDescsSect );
 
-            const char *baseRelocDescs = (const char*)sections.GetPEDataPointer( baserelocDir.VirtualAddress, sizeRelocations, &baseRelocDescsSect );
-
-            if ( !baseRelocDescs )
-                throw std::exception( "invalid PE base relocation directory" );
+                if ( !gotStream )
+                    throw std::exception( "invalid PE base relocation directory" );
+            }
 
             baseRelocDescsSect->SetPlacedMemory( this->baseRelocAllocEntry, baserelocDir.VirtualAddress, baserelocDir.Size );
 
             // We read relocation data until we are at the end of the directory.
-            size_t currentRelocOffset = 0;
-
-            while ( currentRelocOffset < sizeRelocations )
+            while ( true )
             {
+                // Remember our current offset.
+                std::uint32_t curOffset = baseRelocDescsStream.Tell();
+
+                if ( curOffset >= sizeRelocations )
+                    break;
+
                 // Get current relocation.
-                const IMAGE_BASE_RELOCATION *baseReloc = (const IMAGE_BASE_RELOCATION*)( baseRelocDescs + currentRelocOffset );
+                IMAGE_BASE_RELOCATION baseReloc;
+                baseRelocDescsStream.Read( &baseReloc, sizeof(baseReloc) );
 
                 // Store it.
-                const size_t blockSize = baseReloc->SizeOfBlock;
+                const size_t blockSize = baseReloc.SizeOfBlock;
 
                 // Validate the blockSize.
                 if ( blockSize < sizeof(IMAGE_BASE_RELOCATION) )
@@ -956,19 +1001,17 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 const size_t entryBlockSize = ( blockSize - sizeof(IMAGE_BASE_RELOCATION) );
                 {
                     PEBaseReloc info;
-                    info.offsetOfReloc = baseReloc->VirtualAddress;
+                    info.offsetOfReloc = baseReloc.VirtualAddress;
 
                     // Read all relocations.
                     const DWORD numRelocItems = ( entryBlockSize / sizeof( PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM ) );
 
                     info.items.reserve( numRelocItems );
 
-                    const PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM *relocItems =
-                        (PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM*)( baseReloc + 1 );
-
                     for ( size_t n = 0; n < numRelocItems; n++ )
                     {
-                        const PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM& reloc = relocItems[ n ];
+                        PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM reloc;
+                        baseRelocDescsStream.Read( &reloc, sizeof(reloc) );
 
                         PEBaseReloc::item itemInfo;
                         itemInfo.type = reloc.type;
@@ -981,8 +1024,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     baseRelocs.push_back( std::move( info ) );
                 }
 
-                // Jump to next relocation.
-                currentRelocOffset += blockSize;
+                // Done reading this descriptor.
             }
 
             // Done reading all base relocations.
@@ -997,24 +1039,29 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( debugDir.VirtualAddress != 0 )
         {
             PESection *debugEntrySection;
+            PEDataStream debugEntryStream;
+            {
+                bool gotStream = sections.GetPEDataStream( debugDir.VirtualAddress, debugEntryStream, &debugEntrySection );
 
-            const IMAGE_DEBUG_DIRECTORY *debugEntry = (const IMAGE_DEBUG_DIRECTORY*)sections.GetPEDataPointer( debugDir.VirtualAddress, debugDir.Size, &debugEntrySection );
-
-            if ( !debugEntry )
-                throw std::exception( "invalid PE debug directory" );
+                if ( !gotStream )
+                    throw std::exception( "invalid PE debug directory" );
+            }
 
             debugEntrySection->SetPlacedMemory( debugInfo.allocEntry, debugDir.VirtualAddress, debugDir.Size );
 
+            IMAGE_DEBUG_DIRECTORY debugEntry;
+            debugEntryStream.Read( &debugEntry, sizeof(debugEntry) );
+
             // We store this debug information entry.
             // Debug information can be of many types and we cannot ever handle all of them!
-            debugInfo.characteristics = debugEntry->Characteristics;
-            debugInfo.timeDateStamp = debugEntry->TimeDateStamp;
-            debugInfo.majorVer = debugEntry->MajorVersion;
-            debugInfo.minorVer = debugEntry->MinorVersion;
-            debugInfo.type = debugEntry->Type;
-            debugInfo.sizeOfData = debugEntry->SizeOfData;
-            debugInfo.addrOfRawData = debugEntry->AddressOfRawData;
-            debugInfo.ptrToRawData = debugEntry->PointerToRawData;
+            debugInfo.characteristics = debugEntry.Characteristics;
+            debugInfo.timeDateStamp = debugEntry.TimeDateStamp;
+            debugInfo.majorVer = debugEntry.MajorVersion;
+            debugInfo.minorVer = debugEntry.MinorVersion;
+            debugInfo.type = debugEntry.Type;
+            debugInfo.sizeOfData = debugEntry.SizeOfData;
+            debugInfo.addrOfRawData = debugEntry.AddressOfRawData;
+            debugInfo.ptrToRawData = debugEntry.PointerToRawData;
 
             // TODO: think of a way to parse this information.
         }
@@ -1041,35 +1088,40 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( tlsDataDir.VirtualAddress != 0 )
         {
             PESection *tlsDirSect;
+            PEDataStream tlsDirStream;
+            {
+                bool gotStream = sections.GetPEDataStream( tlsDataDir.VirtualAddress, tlsDirStream, &tlsDirSect );
+
+                if ( !gotStream )
+                {
+                    throw std::exception( "invalid PE thread-local-storage directory" );
+                }
+            }
 
             // It depends on the architecture what directory type we encounter here.
             if ( is64Bit )
             {
-                const IMAGE_TLS_DIRECTORY64 *tlsDir = (const IMAGE_TLS_DIRECTORY64*)sections.GetPEDataPointer( tlsDataDir.VirtualAddress, tlsDataDir.Size, &tlsDirSect );
+                IMAGE_TLS_DIRECTORY64 tlsDir;
+                tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
-                if ( !tlsDir )
-                    throw std::exception( "invalid PE thread-local-storage directory" );
-
-                tlsInfo.startOfRawData = tlsDir->StartAddressOfRawData;
-                tlsInfo.endOfRawData = tlsDir->EndAddressOfRawData;
-                tlsInfo.addressOfIndices = tlsDir->AddressOfIndex;
-                tlsInfo.addressOfCallbacks = tlsDir->AddressOfCallBacks;
-                tlsInfo.sizeOfZeroFill = tlsDir->SizeOfZeroFill;
-                tlsInfo.characteristics = tlsDir->Characteristics;
+                tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
+                tlsInfo.endOfRawData = tlsDir.EndAddressOfRawData;
+                tlsInfo.addressOfIndices = tlsDir.AddressOfIndex;
+                tlsInfo.addressOfCallbacks = tlsDir.AddressOfCallBacks;
+                tlsInfo.sizeOfZeroFill = tlsDir.SizeOfZeroFill;
+                tlsInfo.characteristics = tlsDir.Characteristics;
             }
             else
             {
-                const IMAGE_TLS_DIRECTORY32 *tlsDir = (const IMAGE_TLS_DIRECTORY32*)sections.GetPEDataPointer( tlsDataDir.VirtualAddress, tlsDataDir.Size, &tlsDirSect );
+                IMAGE_TLS_DIRECTORY32 tlsDir;
+                tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
-                if ( !tlsDir )
-                    throw std::exception( "invalid PE thread-local-storage directory" );
-
-                tlsInfo.startOfRawData = tlsDir->StartAddressOfRawData;
-                tlsInfo.endOfRawData = tlsDir->EndAddressOfRawData;
-                tlsInfo.addressOfIndices = tlsDir->AddressOfIndex;
-                tlsInfo.addressOfCallbacks = tlsDir->AddressOfCallBacks;
-                tlsInfo.sizeOfZeroFill = tlsDir->SizeOfZeroFill;
-                tlsInfo.characteristics = tlsDir->Characteristics;
+                tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
+                tlsInfo.endOfRawData = tlsDir.EndAddressOfRawData;
+                tlsInfo.addressOfIndices = tlsDir.AddressOfIndex;
+                tlsInfo.addressOfCallbacks = tlsDir.AddressOfCallBacks;
+                tlsInfo.sizeOfZeroFill = tlsDir.SizeOfZeroFill;
+                tlsInfo.characteristics = tlsDir.Characteristics;
             }
 
             tlsDirSect->SetPlacedMemory( tlsInfo.allocEntry, tlsDataDir.VirtualAddress, tlsDataDir.Size );
@@ -1084,76 +1136,81 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( lcfgDataDir.VirtualAddress != 0 )
         {
             PESection *lcfgDirSect;
+            PEDataStream lcfgDirStream;
+            {
+                bool gotStream = sections.GetPEDataStream( lcfgDataDir.VirtualAddress, lcfgDirStream, &lcfgDirSect );
+
+                if ( !gotStream )
+                {
+                    throw std::exception( "invalid PE load config directory" );
+                }
+            }
 
             if ( is64Bit )
             {
-                const IMAGE_LOAD_CONFIG_DIRECTORY64 *lcfgDir = (const IMAGE_LOAD_CONFIG_DIRECTORY64*)sections.GetPEDataPointer( lcfgDataDir.VirtualAddress, lcfgDataDir.Size, &lcfgDirSect );
+                IMAGE_LOAD_CONFIG_DIRECTORY64 lcfgDir;
+                lcfgDirStream.Read( &lcfgDir, sizeof(lcfgDir) );
 
-                if ( !lcfgDir )
-                    throw std::exception( "invalid PE load config directory" );
-
-                if ( lcfgDir->Size < sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64) )
+                if ( lcfgDir.Size < sizeof(lcfgDir) )
                     throw std::exception( "invalid PE load configuration directory size" );
 
-                loadConfig.timeDateStamp = lcfgDir->TimeDateStamp;
-                loadConfig.majorVersion = lcfgDir->MajorVersion;
-                loadConfig.minorVersion = lcfgDir->MinorVersion;
-                loadConfig.globFlagsClear = lcfgDir->GlobalFlagsClear;
-                loadConfig.globFlagsSet = lcfgDir->GlobalFlagsSet;
-                loadConfig.critSecDefTimeOut = lcfgDir->CriticalSectionDefaultTimeout;
-                loadConfig.deCommitFreeBlockThreshold = lcfgDir->DeCommitFreeBlockThreshold;
-                loadConfig.deCommitTotalFreeThreshold = lcfgDir->DeCommitTotalFreeThreshold;
-                loadConfig.lockPrefixTable = lcfgDir->LockPrefixTable;
-                loadConfig.maxAllocSize = lcfgDir->MaximumAllocationSize;
-                loadConfig.virtualMemoryThreshold = lcfgDir->VirtualMemoryThreshold;
-                loadConfig.processAffinityMask = lcfgDir->ProcessAffinityMask;
-                loadConfig.processHeapFlags = lcfgDir->ProcessHeapFlags;
-                loadConfig.CSDVersion = lcfgDir->CSDVersion;
-                loadConfig.reserved1 = lcfgDir->Reserved1;
-                loadConfig.editList = lcfgDir->EditList;
-                loadConfig.securityCookie = lcfgDir->SecurityCookie;
-                loadConfig.SEHandlerTable = lcfgDir->SEHandlerTable;
-                loadConfig.SEHandlerCount = lcfgDir->SEHandlerCount;
-                loadConfig.guardCFCheckFunctionPtr = lcfgDir->GuardCFCheckFunctionPointer;
-                loadConfig.reserved2 = lcfgDir->Reserved2;
-                loadConfig.guardCFFunctionTable = lcfgDir->GuardCFFunctionTable;
-                loadConfig.guardCFFunctionCount = lcfgDir->GuardCFFunctionCount;
-                loadConfig.guardFlags = lcfgDir->GuardFlags;
+                loadConfig.timeDateStamp = lcfgDir.TimeDateStamp;
+                loadConfig.majorVersion = lcfgDir.MajorVersion;
+                loadConfig.minorVersion = lcfgDir.MinorVersion;
+                loadConfig.globFlagsClear = lcfgDir.GlobalFlagsClear;
+                loadConfig.globFlagsSet = lcfgDir.GlobalFlagsSet;
+                loadConfig.critSecDefTimeOut = lcfgDir.CriticalSectionDefaultTimeout;
+                loadConfig.deCommitFreeBlockThreshold = lcfgDir.DeCommitFreeBlockThreshold;
+                loadConfig.deCommitTotalFreeThreshold = lcfgDir.DeCommitTotalFreeThreshold;
+                loadConfig.lockPrefixTable = lcfgDir.LockPrefixTable;
+                loadConfig.maxAllocSize = lcfgDir.MaximumAllocationSize;
+                loadConfig.virtualMemoryThreshold = lcfgDir.VirtualMemoryThreshold;
+                loadConfig.processAffinityMask = lcfgDir.ProcessAffinityMask;
+                loadConfig.processHeapFlags = lcfgDir.ProcessHeapFlags;
+                loadConfig.CSDVersion = lcfgDir.CSDVersion;
+                loadConfig.reserved1 = lcfgDir.Reserved1;
+                loadConfig.editList = lcfgDir.EditList;
+                loadConfig.securityCookie = lcfgDir.SecurityCookie;
+                loadConfig.SEHandlerTable = lcfgDir.SEHandlerTable;
+                loadConfig.SEHandlerCount = lcfgDir.SEHandlerCount;
+                loadConfig.guardCFCheckFunctionPtr = lcfgDir.GuardCFCheckFunctionPointer;
+                loadConfig.reserved2 = lcfgDir.Reserved2;
+                loadConfig.guardCFFunctionTable = lcfgDir.GuardCFFunctionTable;
+                loadConfig.guardCFFunctionCount = lcfgDir.GuardCFFunctionCount;
+                loadConfig.guardFlags = lcfgDir.GuardFlags;
             }
             else
             {
-                const IMAGE_LOAD_CONFIG_DIRECTORY32 *lcfgDir = (const IMAGE_LOAD_CONFIG_DIRECTORY32*)sections.GetPEDataPointer( lcfgDataDir.VirtualAddress, lcfgDataDir.Size, &lcfgDirSect );
+                IMAGE_LOAD_CONFIG_DIRECTORY32 lcfgDir;
+                lcfgDirStream.Read( &lcfgDir, sizeof(lcfgDir) );
 
-                if ( !lcfgDir )
-                    throw std::exception( "invalid PE load config directory" );
-
-                if ( lcfgDir->Size < sizeof(IMAGE_LOAD_CONFIG_DIRECTORY32) )
+                if ( lcfgDir.Size < sizeof(lcfgDir) )
                     throw std::exception( "invalid PE load configuration directory size" );
 
-                loadConfig.timeDateStamp = lcfgDir->TimeDateStamp;
-                loadConfig.majorVersion = lcfgDir->MajorVersion;
-                loadConfig.minorVersion = lcfgDir->MinorVersion;
-                loadConfig.globFlagsClear = lcfgDir->GlobalFlagsClear;
-                loadConfig.globFlagsSet = lcfgDir->GlobalFlagsSet;
-                loadConfig.critSecDefTimeOut = lcfgDir->CriticalSectionDefaultTimeout;
-                loadConfig.deCommitFreeBlockThreshold = lcfgDir->DeCommitFreeBlockThreshold;
-                loadConfig.deCommitTotalFreeThreshold = lcfgDir->DeCommitTotalFreeThreshold;
-                loadConfig.lockPrefixTable = lcfgDir->LockPrefixTable;
-                loadConfig.maxAllocSize = lcfgDir->MaximumAllocationSize;
-                loadConfig.virtualMemoryThreshold = lcfgDir->VirtualMemoryThreshold;
-                loadConfig.processAffinityMask = lcfgDir->ProcessAffinityMask;
-                loadConfig.processHeapFlags = lcfgDir->ProcessHeapFlags;
-                loadConfig.CSDVersion = lcfgDir->CSDVersion;
-                loadConfig.reserved1 = lcfgDir->Reserved1;
-                loadConfig.editList = lcfgDir->EditList;
-                loadConfig.securityCookie = lcfgDir->SecurityCookie;
-                loadConfig.SEHandlerTable = lcfgDir->SEHandlerTable;
-                loadConfig.SEHandlerCount = lcfgDir->SEHandlerCount;
-                loadConfig.guardCFCheckFunctionPtr = lcfgDir->GuardCFCheckFunctionPointer;
-                loadConfig.reserved2 = lcfgDir->Reserved2;
-                loadConfig.guardCFFunctionTable = lcfgDir->GuardCFFunctionTable;
-                loadConfig.guardCFFunctionCount = lcfgDir->GuardCFFunctionCount;
-                loadConfig.guardFlags = lcfgDir->GuardFlags;
+                loadConfig.timeDateStamp = lcfgDir.TimeDateStamp;
+                loadConfig.majorVersion = lcfgDir.MajorVersion;
+                loadConfig.minorVersion = lcfgDir.MinorVersion;
+                loadConfig.globFlagsClear = lcfgDir.GlobalFlagsClear;
+                loadConfig.globFlagsSet = lcfgDir.GlobalFlagsSet;
+                loadConfig.critSecDefTimeOut = lcfgDir.CriticalSectionDefaultTimeout;
+                loadConfig.deCommitFreeBlockThreshold = lcfgDir.DeCommitFreeBlockThreshold;
+                loadConfig.deCommitTotalFreeThreshold = lcfgDir.DeCommitTotalFreeThreshold;
+                loadConfig.lockPrefixTable = lcfgDir.LockPrefixTable;
+                loadConfig.maxAllocSize = lcfgDir.MaximumAllocationSize;
+                loadConfig.virtualMemoryThreshold = lcfgDir.VirtualMemoryThreshold;
+                loadConfig.processAffinityMask = lcfgDir.ProcessAffinityMask;
+                loadConfig.processHeapFlags = lcfgDir.ProcessHeapFlags;
+                loadConfig.CSDVersion = lcfgDir.CSDVersion;
+                loadConfig.reserved1 = lcfgDir.Reserved1;
+                loadConfig.editList = lcfgDir.EditList;
+                loadConfig.securityCookie = lcfgDir.SecurityCookie;
+                loadConfig.SEHandlerTable = lcfgDir.SEHandlerTable;
+                loadConfig.SEHandlerCount = lcfgDir.SEHandlerCount;
+                loadConfig.guardCFCheckFunctionPtr = lcfgDir.GuardCFCheckFunctionPointer;
+                loadConfig.reserved2 = lcfgDir.Reserved2;
+                loadConfig.guardCFFunctionTable = lcfgDir.GuardCFFunctionTable;
+                loadConfig.guardCFFunctionCount = lcfgDir.GuardCFFunctionCount;
+                loadConfig.guardFlags = lcfgDir.GuardFlags;
             }
 
             lcfgDirSect->SetPlacedMemory( loadConfig.allocEntry, lcfgDataDir.VirtualAddress, lcfgDataDir.Size );
@@ -1254,11 +1311,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
         if ( delayDataDir.VirtualAddress != 0 )
         {
             PESection *delayLoadDescsSect;
+            PEDataStream delayLoadDescsStream;
+            {
+                bool gotStream = sections.GetPEDataStream( delayDataDir.VirtualAddress, delayLoadDescsStream, &delayLoadDescsSect );
 
-            const IMAGE_DELAYLOAD_DESCRIPTOR *delayLoadDescs = (const IMAGE_DELAYLOAD_DESCRIPTOR*)sections.GetPEDataPointer( delayDataDir.VirtualAddress, delayDataDir.Size, &delayLoadDescsSect );
-
-            if ( !delayLoadDescs )
-                throw std::exception( "invalid PE delay loads directory" );
+                if ( !gotStream )
+                    throw std::exception( "invalid PE delay loads directory" );
+            }
 
             delayLoadDescsSect->SetPlacedMemory( this->delayLoadsAllocEntry, delayDataDir.VirtualAddress, delayDataDir.Size );
 
@@ -1269,7 +1328,11 @@ void PEFile::LoadFromDisk( CFile *peStream )
             // Store all of the details.
             for ( size_t n = 0; n < numDelayLoads; n++ )
             {
-                const IMAGE_DELAYLOAD_DESCRIPTOR& delayLoad = delayLoadDescs[ n ];
+                // Seek to this descriptor.
+                delayLoadDescsStream.Seek( n * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR) );
+
+                IMAGE_DELAYLOAD_DESCRIPTOR delayLoad;
+                delayLoadDescsStream.Read( &delayLoad, sizeof(delayLoad) );
 
                 PEDelayLoadDesc desc;
                 desc.attrib = delayLoad.Attributes.AllAttributes;
@@ -1278,15 +1341,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 if ( delayLoad.DllNameRVA != 0 )
                 {
                     PESection *dllNamePtrSect;
+                    {
+                        bool gotName = sections.ReadPEString( delayLoad.DllNameRVA, desc.DLLName, &dllNamePtrSect );
 
-                    const char *dllNamePtr = (const char*)sections.GetPEDataPointer( delayLoad.DllNameRVA, 1, &dllNamePtrSect );
-
-                    if ( !dllNamePtr )
-                        throw std::exception( "failed to read PE delay load desc DLL name" );
+                        if ( !gotName )
+                            throw std::exception( "failed to read PE delay load desc DLL name" );
+                    }
 
                     dllNamePtrSect->SetPlacedMemory( desc.DLLName_allocEntry, delayLoad.DllNameRVA );
-
-                    desc.DLLName = dllNamePtr;
                 }
 
                 desc.DLLHandleOffset = delayLoad.ModuleHandleRVA;
@@ -1752,7 +1814,20 @@ void PEFile::PESection::SetPlacedMemory( PESectionAllocation& blockMeta, std::ui
     // We keep the block structure invalid.
     assert( blockMeta.theSection == NULL );
 
-    blockMeta.sectOffset = allocOff;
+    // Verify that this allocation really is inside the section.
+    {
+        typedef sliceOfData <std::uint32_t> streamSlice_t;
+
+        streamSlice_t sectionSlice( this->virtualAddr, this->virtualSize );
+        
+        streamSlice_t reqSlice( allocOff, std::max( allocSize, 1u ) );
+
+        streamSlice_t::eIntersectionResult intResult = reqSlice.intersectWith( sectionSlice );
+
+        assert( intResult == streamSlice_t::INTERSECT_INSIDE || intResult == streamSlice_t::INTERSECT_EQUAL );
+    }
+
+    blockMeta.sectOffset = ( allocOff - this->virtualAddr );
     blockMeta.dataSize = allocSize;
     blockMeta.theSection = this;
 
@@ -1922,6 +1997,10 @@ void PEFile::PESection::Finalize( void )
     // It is created by taking the rawdata size.
     // The image will later round it to section alignment.
     this->virtualSize = ( (decltype(virtualSize))stream.Size() );
+
+    // Final images are consider not allocatable anymore
+    // so lets get rid of allocation information.
+    this->dataAlloc.Clear();
 
     this->isFinal = true;
 }
@@ -2158,12 +2237,36 @@ void PEFile::CommitDataDirectories( void )
     // that we previously sheduled. This is possible because now every section has been
     // registered in the image and placed somewhere on virtual memory.
     
+    LIST_FOREACH_BEGIN( PESection, this->sections.sectionList.root, sectionNode )
+
+        for ( const PESection::PEPlacedOffset& placedOff : item->placedOffsets )
+        {
+            // Parameters to write RVA.
+            PESection *writeSect = item;
+            std::uint32_t writeOff = placedOff.dataOffset;
+
+            // Parameters to calculate RVA.
+            PESection *targetSect = placedOff.targetSect;
+            std::uint32_t targetOff = placedOff.offsetIntoSect;
+
+            assert( targetSect->isFinal == true );
+
+            // Calculate target RVA.
+            std::uint32_t targetRVA = ( targetSect->virtualAddr + targetOff );
+
+            // Write the RVA.
+            writeSect->stream.Seek( (std::int32_t)writeOff );
+            writeSect->stream.WriteUInt32( targetRVA );
+        }
+
+    LIST_FOREACH_END
 }
 
-PEFile::PESectionMan::PESectionMan( std::uint32_t sectionAlignment )
+PEFile::PESectionMan::PESectionMan( std::uint32_t sectionAlignment, std::uint32_t imageBase )
 {
     this->numSections = 0;
     this->sectionAlignment = sectionAlignment;
+    this->imageBase = imageBase;
 }
 
 PEFile::PESectionMan::~PESectionMan( void )
@@ -2190,16 +2293,20 @@ PEFile::PESection* PEFile::PESectionMan::AddSection( PESection&& theSection )
     // A final section must have a valid virtualSize region of all its allocations.
     assert( theSection.isFinal == true );
 
+    // Images have a base address to start allocations from that is decided from the
+    // very beginning.
+    const std::uint32_t imageBase = this->imageBase;
+
     // When the section is bound to our image, we will give it an aligned size
     // based on sectionAlignment.
     const std::uint32_t sectionAlignment = this->sectionAlignment;
 
-    std::uint32_t alignedSectionSize = ALIGN_SIZE( theSection.virtualSize, sectionAlignment );
+    std::uint32_t alignedSectionSize = AsLIGN_SIZE( theSection.virtualSize, sectionAlignment );
 
     // We allocate space for this section inside of our executable.
     sectAllocSemantics::allocInfo allocInfo;
 
-    bool foundSpace = sectAllocSemantics::FindSpace( sectVirtualAllocMan, alignedSectionSize, allocInfo, sectionAlignment );
+    bool foundSpace = sectAllocSemantics::FindSpace( sectVirtualAllocMan, alignedSectionSize, allocInfo, sectionAlignment, imageBase );
 
     if ( !foundSpace )
     {
@@ -2333,8 +2440,16 @@ void PEFile::WriteToStream( CFile *peStream )
 
         auto dirRegHelper = []( IMAGE_DATA_DIRECTORY& dataDir, const PESectionAllocation& allocEntry )
         {
-            dataDir.VirtualAddress = allocEntry.sectOffset;
-            dataDir.Size = allocEntry.dataSize;
+            if ( PESection *allocSect = allocEntry.theSection )
+            {
+                dataDir.VirtualAddress = allocSect->virtualAddr + allocEntry.sectOffset;
+                dataDir.Size = allocEntry.dataSize;
+            }
+            else
+            {
+                dataDir.VirtualAddress = 0;
+                dataDir.Size = 0;
+            }
         };
 
         dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_EXPORT ], this->exportDir.allocEntry );

@@ -182,7 +182,9 @@
     <ClInclude Include="..\src\StdInc.h" />
   </ItemGroup>
   <ItemGroup>
-    <Natvis Include="peloader.natvis" />
+    <Natvis Include="peloader.natvis">
+      <SubType>Designer</SubType>
+    </Natvis>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
