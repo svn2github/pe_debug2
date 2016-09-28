@@ -2,8 +2,12 @@
 #define _PELOADER_CORE_
 
 #include <sdk/rwlist.hpp>
+#include <sdk/MemoryRaw.h>
 #include <sdk/MemoryUtils.h>
 #include <sdk/MemoryUtils.stream.h>
+
+#include <unordered_map>
+#include <set>
 
 namespace PEStructures
 {
@@ -216,9 +220,13 @@ private:
     };
 
     struct PESectionMan;
+    struct PEDataStream;
 
     struct PESection
     {
+        friend struct PESectionMan;
+        friend struct PEDataStream;
+
         PESection( void );
         PESection( const PESection& right ) = delete;
         PESection( PESection&& right )
@@ -226,6 +234,7 @@ private:
               virtualAddr( std::move( right.virtualAddr ) ), relocations( std::move( right.relocations ) ),
               linenumbers( std::move( right.linenumbers ) ), chars( std::move( right.chars ) ),
               isFinal( std::move( right.isFinal ) ), dataAlloc( std::move( right.dataAlloc ) ),
+              dataAllocList( std::move( right.dataAllocList ) ),
               streamAllocMan( std::move( right.streamAllocMan ) ), stream( std::move( right.stream ) ),
               placedOffsets( std::move( right.placedOffsets ) ), RVAreferalList( std::move( right.RVAreferalList ) )
         {
@@ -297,6 +306,7 @@ private:
             this->chars = std::move( right.chars );
             this->isFinal = std::move( right.isFinal );
             this->dataAlloc = std::move( right.dataAlloc );
+            this->dataAllocList = std::move( right.dataAllocList );
             this->streamAllocMan = std::move( right.streamAllocMan );
             this->stream = std::move( right.stream );
             this->placedOffsets = std::move( right.placedOffsets );
@@ -317,9 +327,11 @@ private:
         }
 
         std::string shortName;
+    private:
         std::uint32_t virtualSize;
         std::uint32_t virtualAddr;
-        
+
+    public:
         std::vector <PERelocation> relocations;
         std::vector <PELinenumber> linenumbers;
 
@@ -373,14 +385,18 @@ private:
             bool sect_mem_write;
         } chars;
 
+    private:
         // Meta-data that we manage.
         // * Allocation status.
-        bool isFinal;
+        bool isFinal;       // if true then virtualSize is valid.
 
         typedef InfiniteCollisionlessBlockAllocator <std::uint32_t> sectionSpaceAlloc_t;
 
+    public:
         struct PESectionAllocation
         {
+            friend struct PESection;
+
             // TODO: once we begin differing between PE file version we have to be
             // careful about maintaining allocations.
 
@@ -460,9 +476,36 @@ private:
             void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff );
             void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff = 0 );
 
+        private:
             PESection *theSection;
             std::uint32_t sectOffset;
             std::uint32_t dataSize;     // if 0 then true size not important/unknown.
+
+        public:
+            inline PESection* GetSection( void ) const          { return this->theSection; }
+            inline std::uint32_t GetDataSize( void ) const      { return this->dataSize; }
+
+            inline std::uint32_t ResolveInternalOffset( std::uint32_t offsetInto ) const
+            {
+                if ( this->theSection == NULL )
+                {
+                    throw std::exception( "attempt to resolve unallocated allocation offset" );
+                }
+
+                return ( this->sectOffset + offsetInto );
+            }
+
+            inline std::uint32_t ResolveOffset( std::uint32_t offset ) const
+            {
+                PESection *theSection = this->theSection;
+
+                if ( theSection == NULL )
+                {
+                    throw std::exception( "attempt to resolve unallocated RVA" );
+                }
+
+                return theSection->ResolveRVA( this->sectOffset + offset );
+            }
 
             inline bool IsAllocated( void ) const
             {
@@ -480,11 +523,54 @@ private:
             {
                 return (PESectionAllocation*)( (char*)block - offsetof(PESectionAllocation, sectionBlock) );
             }
+
+            // Write helpers for native numbers.
+#define PESECT_WRITEHELPER( typeName, type ) \
+            inline void Write##typeName##( type value, std::int32_t dataOff = 0 ) \
+            { \
+                this->WriteToSection( &value, sizeof(value), dataOff ); \
+            }
+
+            PESECT_WRITEHELPER( Int8, std::int8_t );
+            PESECT_WRITEHELPER( Int16, std::int16_t );
+            PESECT_WRITEHELPER( Int32, std::int32_t );
+            PESECT_WRITEHELPER( Int64, std::int64_t );
+            PESECT_WRITEHELPER( UInt8, std::uint8_t );
+            PESECT_WRITEHELPER( UInt16, std::uint16_t );
+            PESECT_WRITEHELPER( UInt32, std::uint32_t );
+            PESECT_WRITEHELPER( UInt64, std::uint64_t );
         };
+
+        // General method and initialization.
+        void SetPlacementInfo( std::uint32_t virtAddr, std::uint32_t virtSize );
+
+        inline std::uint32_t GetVirtualAddress( void ) const
+        {
+            if ( this->ownerImage == NULL )
+            {
+                throw std::exception( "attempt to get virtual address from section unbound to image" );
+            }
+
+            return this->virtualAddr;
+        }
+
+        inline std::uint32_t GetVirtualSize( void ) const
+        {
+            if ( this->isFinal == false )
+            {
+                throw std::exception( "attempt to get virtual size from unfinished section" );
+            }
+
+            return this->virtualSize;
+        }
+
+        inline bool IsFinal( void ) const       { return this->isFinal; }
 
         // Allocation methods.
         std::uint32_t Allocate( PESectionAllocation& blockMeta, std::uint32_t allocSize, std::uint32_t alignment = sizeof(std::uint32_t) );
         void SetPlacedMemory( PESectionAllocation& blockMeta, std::uint32_t allocOff, std::uint32_t allocSize = 0u );
+
+        std::uint32_t ResolveRVA( std::uint32_t sectOffset ) const;
 
         std::uint32_t GetPENativeFlags( void ) const;
 
@@ -521,14 +607,7 @@ public:
         // RVA registrations into a section.
         struct PEPlacedOffset
         {
-            inline PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect )
-            {
-                this->dataOffset = dataOffset;
-                this->targetSect = targetSect;
-                this->offsetIntoSect = offsetIntoSect;
-
-                LIST_INSERT( targetSect->RVAreferalList.root, this->targetNode );
-            }
+            PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect );
 
             inline PEPlacedOffset( PEPlacedOffset&& right )
             {
@@ -937,6 +1016,12 @@ public:
             this->ordinalBase = 0;
         }
 
+        inline PEExportDir( const PEExportDir& right ) = delete;
+        inline PEExportDir( PEExportDir&& right ) = default;
+
+        inline PEExportDir& operator = ( const PEExportDir& right ) = delete;
+        inline PEExportDir& operator = ( PEExportDir&& right ) = default;
+
         std::uint32_t chars;
         std::uint32_t timeDateStamp;
         std::uint16_t majorVersion;
@@ -974,6 +1059,13 @@ public:
     // Import informations.
     struct PEImportDesc
     {
+        inline PEImportDesc( void ) = default;
+        inline PEImportDesc( const PEImportDesc& right ) = delete;
+        inline PEImportDesc( PEImportDesc&& right ) = default;
+
+        inline PEImportDesc& operator = ( const PEImportDesc& right ) = delete;
+        inline PEImportDesc& operator = ( PEImportDesc&& right ) = default;
+
         struct importFunc
         {
             std::uint64_t ordinal_hint;
@@ -1005,7 +1097,7 @@ public:
             DATA
         };
 
-        inline PEResourceItem( eType typeDesc, std::wstring name ) : itemType( typeDesc ), name( std::move( name ) )
+        inline PEResourceItem( eType typeDesc, std::u16string name ) : itemType( typeDesc ), name( std::move( name ) )
         {
             this->identifier = 0;
             this->hasIdentifierName = false;
@@ -1017,14 +1109,14 @@ public:
         }
 
         eType itemType;
-        std::wstring name;
-        std::uint16_t identifier;
-        bool hasIdentifierName;
+        std::u16string name;        // valid if hasIdentifierName == false
+        std::uint16_t identifier;   // valid if hasIdentifierName == true
+        bool hasIdentifierName;     // if true then identifier field is valid, name is not
     };
 
     struct PEResourceInfo : PEResourceItem
     {
-        inline PEResourceInfo( std::wstring name ) : PEResourceItem( eType::DATA, std::move( name ) )
+        inline PEResourceInfo( std::u16string name ) : PEResourceItem( eType::DATA, std::move( name ) )
         {
             this->dataOffset = 0;
             this->dataSize = 0;
@@ -1040,13 +1132,31 @@ public:
     
     struct PEResourceDir : PEResourceItem
     {
-        inline PEResourceDir( std::wstring name ) : PEResourceItem( eType::DIRECTORY, std::move( name ) )
+        inline PEResourceDir( std::u16string name ) : PEResourceItem( eType::DIRECTORY, std::move( name ) )
         {
             this->characteristics = 0;
             this->timeDateStamp = 0;
             this->majorVersion = 0;
             this->minorVersion = 0;
         }
+
+        inline PEResourceDir( const PEResourceDir& right ) = delete;
+        inline PEResourceDir( PEResourceDir&& right ) = default;
+
+        inline ~PEResourceDir( void )
+        {
+            // We need to destroy all our children, because they are
+            // dynamically allocated.
+            for ( PEResourceItem *item : this->children )
+            {
+                delete item;
+            }
+
+            this->children.clear();
+        }
+
+        inline PEResourceDir& operator = ( const PEResourceDir& right ) = delete;
+        inline PEResourceDir& operator = ( PEResourceDir&& right ) = default;
 
         std::uint32_t characteristics;
         std::uint32_t timeDateStamp;
@@ -1085,6 +1195,13 @@ public:
 
     struct PEBaseReloc
     {
+        inline PEBaseReloc( void ) = default;
+        inline PEBaseReloc( const PEBaseReloc& right ) = delete;
+        inline PEBaseReloc( PEBaseReloc&& right ) = default;
+
+        inline PEBaseReloc& operator = ( const PEBaseReloc& right ) = delete;
+        inline PEBaseReloc& operator = ( PEBaseReloc&& right ) = default;
+
         std::uint32_t offsetOfReloc;
 
         struct item
@@ -1111,6 +1228,12 @@ public:
             this->addrOfRawData = 0;
             this->ptrToRawData = 0;
         }
+
+        inline PEDebug( const PEDebug& right ) = delete;
+        inline PEDebug( PEDebug&& right ) = default;
+
+        inline PEDebug& operator = ( const PEDebug& right ) = delete;
+        inline PEDebug& operator = ( PEDebug&& right ) = default;
 
         std::uint32_t characteristics;
         std::uint32_t timeDateStamp;
@@ -1146,6 +1269,12 @@ public:
             this->sizeOfZeroFill = 0;
             this->characteristics = 0;
         }
+
+        inline PEThreadLocalStorage( const PEThreadLocalStorage& right ) = delete;
+        inline PEThreadLocalStorage( PEThreadLocalStorage&& right ) = default;
+
+        inline PEThreadLocalStorage& operator = ( const PEThreadLocalStorage& right ) = delete;
+        inline PEThreadLocalStorage& operator = ( PEThreadLocalStorage&& right ) = default;
 
         std::uint64_t startOfRawData;
         std::uint64_t endOfRawData;
@@ -1188,6 +1317,12 @@ public:
             this->guardFlags = 0;
         }
 
+        inline PELoadConfig( const PELoadConfig& right ) = delete;
+        inline PELoadConfig( PELoadConfig&& right ) = default;
+
+        inline PELoadConfig& operator = ( const PELoadConfig& right ) = delete;
+        inline PELoadConfig& operator = ( PELoadConfig&& right ) = default;
+
         std::uint32_t timeDateStamp;
         std::uint16_t majorVersion, minorVersion;
         std::uint32_t globFlagsClear;
@@ -1218,6 +1353,13 @@ public:
 
     struct PEBoundImports
     {
+        inline PEBoundImports( void ) = default;
+        inline PEBoundImports( const PEBoundImports& right ) = delete;
+        inline PEBoundImports( PEBoundImports&& right ) = default;
+        
+        inline PEBoundImports& operator = ( const PEBoundImports& right ) = delete;
+        inline PEBoundImports& operator = ( PEBoundImports&& right ) = default;
+
         std::uint32_t timeDateStamp;
         std::string DLLName;
 
@@ -1278,10 +1420,8 @@ public:
     // Meta-data.
     bool is64Bit;
 
-    inline static PEResourceDir LoadResourceDirectory( PESectionMan& sections, PEDataStream& rootStream, std::wstring nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY& serResDir )
+    inline static PEResourceDir LoadResourceDirectory( PESectionMan& sections, PEDataStream& rootStream, std::u16string nameOfDir, const PEStructures::IMAGE_RESOURCE_DIRECTORY& serResDir )
     {
-        using namespace PEStructures;
-
         PEResourceDir curDir( std::move( nameOfDir ) );
 
         // Store general details.
@@ -1296,7 +1436,7 @@ public:
         std::uint16_t numIDEntries = serResDir.NumberOfIdEntries;
 
         // Function to read the data behind a resource directory entry.
-        auto resDataParser = [&]( std::wstring nameOfItem, const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY& entry ) -> PEResourceItem*
+        auto resDataParser = [&]( std::u16string nameOfItem, const PEStructures::IMAGE_RESOURCE_DIRECTORY_ENTRY& entry ) -> PEResourceItem*
         {
             // Seek to this data entry.
             rootStream.Seek( entry.OffsetToData );
@@ -1351,11 +1491,16 @@ public:
             }
 
             // Load the name.
-            std::wstring nameOfItem;
+            std::u16string nameOfItem;
             {
                 rootStream.Seek( namedEntry.NameOffset );
 
-                ReadPEString( rootStream, nameOfItem );
+                std::uint16_t nameCharCount;
+                rootStream.Read( &nameCharCount, sizeof(nameCharCount) );
+
+                nameOfItem.resize( nameCharCount );
+                
+                rootStream.Read( (char16_t*)nameOfItem.c_str(), nameCharCount );
             }
 
             // Create a resource item.
@@ -1378,7 +1523,7 @@ public:
                 throw std::exception( "invalid PE resource directory ID entry" );
 
             // Create a resource item.
-            PEResourceItem *resItem = resDataParser( std::wstring(), idEntry );
+            PEResourceItem *resItem = resDataParser( std::u16string(), idEntry );
 
             resItem->identifier = idEntry.Id;
             resItem->hasIdentifierName = true;

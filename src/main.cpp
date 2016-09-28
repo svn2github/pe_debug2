@@ -29,7 +29,9 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        std::unique_ptr <CFile> filePtr( fileRoot->Open( "pe_debug.exe", "rb" ) );
+        const char *inputName = "pe_debug.exe";
+
+        std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 
         if ( filePtr )
         {
@@ -38,7 +40,7 @@ int main( int argc, char *argv[] )
             filedata.LoadFromDisk( filePtr.get() );
 
             // Decide on the PE image type what output filename we should pick.
-            const char *outFileName;
+            filePath outFileName;
 
             if ( filedata.IsDynamicLinkLibrary() )
             {
@@ -47,6 +49,17 @@ int main( int argc, char *argv[] )
             else
             {
                 outFileName = "out.exe";
+            }
+
+            // If we have the same input name as output name, then
+            // slightly change the output name.
+            if ( outFileName.equals( inputName, false ) )
+            {
+                filePath extItem;
+                
+                filePath nameItem = FileSystem::GetFileNameItem( outFileName, false, NULL, &extItem );
+
+                outFileName = ( nameItem + "_new." + extItem );
             }
 
             // Write it to another location.

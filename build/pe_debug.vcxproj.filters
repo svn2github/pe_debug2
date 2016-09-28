@@ -3,12 +3,41 @@
   <ItemGroup>
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\peloader.cpp" />
+    <ClCompile Include="..\src\peloader.read.cpp" />
+    <ClCompile Include="..\src\peloader.write.cpp" />
+    <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp">
+      <Filter>debugsdk</Filter>
+    </ClCompile>
+    <ClCompile Include="..\shared\debugsdk\dbgheap.cpp">
+      <Filter>debugsdk</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\StdInc.h" />
     <ClInclude Include="..\src\peloader.h" />
+    <ClInclude Include="..\src\peloader.internal.hxx" />
+    <ClInclude Include="..\src\config\debugsdk_config.h">
+      <Filter>config</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\debugsdk\dbgtrace.h">
+      <Filter>debugsdk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\debugsdk\dbgtrace.vendor.hwbrk.hxx">
+      <Filter>debugsdk</Filter>
+    </ClInclude>
+    <ClInclude Include="..\shared\debugsdk\dbgheap.h">
+      <Filter>debugsdk</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="peloader.natvis" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="config">
+      <UniqueIdentifier>{d113acdf-2d98-49ba-8fa2-20fbcc1f87ac}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="debugsdk">
+      <UniqueIdentifier>{b295a017-a08c-4493-9ccd-21ea52f67cc9}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
 </Project>

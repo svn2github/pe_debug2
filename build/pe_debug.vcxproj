@@ -92,7 +92,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>false</SDLCheck>
-      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <MinimalRebuild>false</MinimalRebuild>
@@ -106,6 +106,7 @@
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <EntryPointSymbol>_DebugInit</EntryPointSymbol>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -113,7 +114,7 @@
       <WarningLevel>Level3</WarningLevel>
       <Optimization>Disabled</Optimization>
       <SDLCheck>false</SDLCheck>
-      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <MinimalRebuild>false</MinimalRebuild>
@@ -127,6 +128,7 @@
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <EntryPointSymbol>_DebugInit</EntryPointSymbol>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -136,7 +138,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -146,6 +148,7 @@
       <AdditionalDependencies>libfs.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <EntryPointSymbol>_DebugInit</EntryPointSymbol>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -158,7 +161,7 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>false</SDLCheck>
-      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
     </ClCompile>
@@ -168,17 +171,27 @@
       <AdditionalDependencies>libfs.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+      <EntryPointSymbol>_DebugInit</EntryPointSymbol>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\shared\debugsdk\dbgheap.cpp" />
+    <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp" />
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\peloader.cpp" />
+    <ClCompile Include="..\src\peloader.read.cpp" />
+    <ClCompile Include="..\src\peloader.write.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\shared\debugsdk\dbgheap.h" />
+    <ClInclude Include="..\shared\debugsdk\dbgtrace.h" />
+    <ClInclude Include="..\shared\debugsdk\dbgtrace.vendor.hwbrk.hxx" />
+    <ClInclude Include="..\src\config\debugsdk_config.h" />
     <ClInclude Include="..\src\peloader.h" />
+    <ClInclude Include="..\src\peloader.internal.hxx" />
     <ClInclude Include="..\src\StdInc.h" />
   </ItemGroup>
   <ItemGroup>
