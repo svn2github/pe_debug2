@@ -1,3 +1,6 @@
+// Windows NT Portable Executable file loader written by The_GTA.
+// Inspired by Bas Timmer's PE loading inside of FiveM.
+
 #ifndef _PELOADER_CORE_
 #define _PELOADER_CORE_
 
@@ -234,7 +237,7 @@ private:
               virtualAddr( std::move( right.virtualAddr ) ), relocations( std::move( right.relocations ) ),
               linenumbers( std::move( right.linenumbers ) ), chars( std::move( right.chars ) ),
               isFinal( std::move( right.isFinal ) ), dataAlloc( std::move( right.dataAlloc ) ),
-              dataAllocList( std::move( right.dataAllocList ) ),
+              dataRefList( std::move( right.dataRefList ) ), dataAllocList( std::move( right.dataAllocList ) ),
               streamAllocMan( std::move( right.streamAllocMan ) ), stream( std::move( right.stream ) ),
               placedOffsets( std::move( right.placedOffsets ) ), RVAreferalList( std::move( right.RVAreferalList ) )
         {
@@ -283,6 +286,13 @@ private:
 
             LIST_FOREACH_END
 
+            // Section data references.
+            LIST_FOREACH_BEGIN( PESectionDataReference, this->dataRefList.root, sectionNode )
+
+                item->theSect = this;
+
+            LIST_FOREACH_END
+
             // Then fix the RVAs that could target us.
             LIST_FOREACH_BEGIN( PEPlacedOffset, this->RVAreferalList.root, targetNode )
 
@@ -306,6 +316,7 @@ private:
             this->chars = std::move( right.chars );
             this->isFinal = std::move( right.isFinal );
             this->dataAlloc = std::move( right.dataAlloc );
+            this->dataRefList = std::move( right.dataRefList );
             this->dataAllocList = std::move( right.dataAllocList );
             this->streamAllocMan = std::move( right.streamAllocMan );
             this->stream = std::move( right.stream );
@@ -393,6 +404,85 @@ private:
         typedef InfiniteCollisionlessBlockAllocator <std::uint32_t> sectionSpaceAlloc_t;
 
     public:
+        // Pointer into data inside of a PESection.
+        struct PESectionDataReference
+        {
+            friend struct PESection;
+            friend struct PEDataStream;
+
+            inline PESectionDataReference( PESection *theSect, std::uint32_t sectOffset, std::uint32_t dataSize = 0 )
+            {
+                this->theSect = theSect;
+                this->sectOffset = sectOffset;
+                this->dataSize = dataSize;
+
+                LIST_INSERT( theSect->dataRefList.root, this->sectionNode );
+            }
+
+            inline PESectionDataReference( const PESectionDataReference& right ) = delete;
+            inline PESectionDataReference( PESectionDataReference&& right )
+                : sectOffset( std::move( right.sectOffset ) ), dataSize( std::move( right.dataSize ) )
+            {
+                PESection *theSect = right.theSect;
+
+                this->theSect = theSect;
+
+                if ( theSect )
+                {
+                    // If we have a section, then the node is successfully linked into a section.
+                    this->sectionNode.moveFrom( std::move( right.sectionNode ) );
+
+                    // We turn the moved-from object invalid.
+                    right.theSect = NULL;
+                }
+            }
+
+            // We mirror a lot from PESectionAllocation, but remember
+            // that the types are fundamentally meant for different purposes.
+
+            inline ~PESectionDataReference( void )
+            {
+                if ( PESection *theSect = this->theSect )
+                {
+                    LIST_REMOVE( this->sectionNode );
+
+                    this->theSect = NULL;
+                }
+            }
+
+            inline PESectionDataReference& operator = ( const PESectionDataReference& right ) = delete;
+            inline PESectionDataReference& operator = ( PESectionDataReference&& right )
+            {
+                // This is what can be kind of done by default.
+                // Reason why C++ allows different is that you can optimize this.
+                this->~PESectionDataReference();
+
+                return *new (this) PESectionDataReference( std::move( right ) );
+            }
+
+            inline std::uint32_t GetRVA( void ) const
+            {
+                if ( this->theSect == NULL )
+                {
+                    throw std::exception( "attempt to get RVA from invalid PE section data reference" );
+                }
+
+                return this->theSect->ResolveRVA( this->sectOffset );
+            }
+
+            inline std::uint32_t GetDataSize( void ) const
+            {
+                return this->dataSize;
+            }
+
+        private:
+            PESection *theSect;
+            std::uint32_t sectOffset;
+            std::uint32_t dataSize;
+
+            RwListEntry <PESectionDataReference> sectionNode;
+        };
+
         struct PESectionAllocation
         {
             friend struct PESection;
@@ -408,12 +498,11 @@ private:
             }
 
             inline PESectionAllocation( PESectionAllocation&& right )
+                : sectOffset( std::move( right.sectOffset ) ), dataSize( std::move( right.dataSize ) )
             {
                 PESection *newSectionHost = right.theSection;
 
                 this->theSection = newSectionHost;
-                this->sectOffset = right.sectOffset;
-                this->dataSize = right.dataSize;
 
                 if ( newSectionHost )
                 {
@@ -578,6 +667,10 @@ private:
         // Otherwise we keep a collisionless struct of allocations we made.
         sectionSpaceAlloc_t dataAlloc;
 
+        // List which contains pure data pointers into section data that will
+        // be transformed into PEDataStream access objects.
+        RwList <PESectionDataReference> dataRefList;
+
         // List which contains unordered allocated chunks, mostly useful for
         // final sections.
         RwList <PESectionAllocation> dataAllocList;
@@ -667,6 +760,7 @@ public:
         RwListEntry <PESection> sectionNode;
         PESectionMan *ownerImage;
     };
+    using PESectionDataReference = PESection::PESectionDataReference;
     using PESectionAllocation = PESection::PESectionAllocation;
 
 private:
@@ -686,6 +780,11 @@ private:
             this->accessSection = theSection;
             this->dataOffset = dataOffset;
             this->seek_off = 0;
+        }
+
+        static inline PEDataStream fromDataRef( const PESectionDataReference& dataRef )
+        {
+            return PEDataStream( dataRef.theSect, dataRef.sectOffset );
         }
 
         inline void Seek( std::uint32_t offset )
@@ -807,18 +906,16 @@ private:
 
         inline std::uint32_t GetImageSize( void )
         {
+            // Pretty easy to get because we have an address-sorted list of sections.
             std::uint32_t unalignedMemImageEndOffMax = sectAllocSemantics::GetSpanSize( sectVirtualAllocMan );
 
             return ALIGN_SIZE( unalignedMemImageEndOffMax, this->sectionAlignment );
         }
 
-        // Function to get a data pointer of data directories.
-        inline bool GetPEDataStream(
-            std::uint64_t virtAddr, PEDataStream& streamOut,
-            PESection **allocSectOut = NULL
-        )
+        // Function to get the section and the offset into it for a RVA.
+        inline bool GetPEDataLocation( std::uint32_t virtAddr, std::uint32_t *allocOffOut, PESection **allocSectOut = NULL )
         {
-            typedef sliceOfData <std::uint64_t> memSlice_t;
+            typedef sliceOfData <std::uint32_t> memSlice_t;
 
             // Create a memory slice of the request.
             memSlice_t requestRegion( virtAddr, 1 );
@@ -829,7 +926,7 @@ private:
                 if ( item->isFinal )
                 {
                     // Create a memory slice of this section.
-                    std::uint64_t sectAddr, sectSize;
+                    std::uint32_t sectAddr, sectSize;
                     {
                         sectAddr = item->virtualAddr;
                         sectSize = item->virtualSize;
@@ -848,10 +945,11 @@ private:
                             *allocSectOut = item;
                         }
 
-                        // OK. We return a stream into this section.
-                        std::uint32_t offsetIntoSect = (uint32_t)( virtAddr - sectAddr );
+                        if ( allocOffOut )
+                        {
+                            *allocOffOut = (uint32_t)( virtAddr - sectAddr );
+                        }
 
-                        streamOut = PEDataStream( item, offsetIntoSect );
                         return true;
                     }
                 }
@@ -860,6 +958,31 @@ private:
 
             // Not found.
             return false;
+        }
+
+        // Function to get a data pointer of data directories.
+        inline bool GetPEDataStream(
+            std::uint32_t virtAddr, PEDataStream& streamOut,
+            PESection **allocSectOut = NULL
+        )
+        {
+            // We return a stream into a section.
+            std::uint32_t offsetIntoSect;
+            PESection *allocSect;
+
+            bool gotLocation = GetPEDataLocation( virtAddr, &offsetIntoSect, &allocSect );
+
+            if ( !gotLocation )
+                return false;
+
+            streamOut = PEDataStream( allocSect, offsetIntoSect );
+
+            if ( allocSectOut )
+            {
+                *allocSectOut = allocSect;
+            }
+
+            return true;
         }
 
         inline bool ReadPEData(
@@ -929,11 +1052,23 @@ private:
                     this->node_iter = this->node_iter->next;
                 }
 
-                AINLINE memSlice_t GetMemorySlice( void )
+            private:
+                AINLINE PESection* GetCurrentSection( void ) const
                 {
-                    PESection *sect = LIST_GETITEM( PESection, this->node_iter, sectionNode );
+                    return LIST_GETITEM( PESection, this->node_iter, sectionNode );
+                }
+
+            public:
+                AINLINE memSlice_t GetMemorySlice( void ) const
+                {
+                    PESection *sect = GetCurrentSection();
 
                     return memSlice_t( sect->virtualAddr, sect->virtualSize );
+                }
+
+                AINLINE PESection* GetNativePointer( void ) const
+                {
+                    return GetCurrentSection();
                 }
 
                 RwListEntry <PESection> *node_iter;
@@ -1116,16 +1251,17 @@ public:
 
     struct PEResourceInfo : PEResourceItem
     {
-        inline PEResourceInfo( std::u16string name ) : PEResourceItem( eType::DATA, std::move( name ) )
+        inline PEResourceInfo( std::u16string name, PESection *dataSect, std::uint32_t dataOff, std::uint32_t dataSize )
+            : PEResourceItem( eType::DATA, std::move( name ) ),
+              sectRef( dataSect, dataOff, dataSize )
         {
-            this->dataOffset = 0;
-            this->dataSize = 0;
             this->codePage = 0;
             this->reserved = 0;
         }
 
-        std::uint32_t dataOffset;   // we link resources to data in sections.
-        std::uint32_t dataSize;
+        // Important rule is that resource allocations are
+        // stored in the resource section.
+        PESectionDataReference sectRef;     // we link resources to data in sections.
         std::uint32_t codePage;
         std::uint32_t reserved;
     };
@@ -1460,10 +1596,24 @@ public:
                 PEStructures::IMAGE_RESOURCE_DATA_ENTRY itemData;
                 rootStream.Read( &itemData, sizeof(itemData) );
 
+                // The data pointer can reside in any section.
+                // We want to resolve it properly into a PESectionAllocation-like
+                // inline construct.
+                PESection *dataSect;
+                std::uint32_t sectOff;
+
+                bool gotLocation = sections.GetPEDataLocation( itemData.OffsetToData, &sectOff, &dataSect );
+
+                if ( !gotLocation )
+                {
+                    throw std::exception( "invalid PE resource item data pointer (could not find section location)" );
+                }
+
                 // We dont have to recurse anymore.
-                PEResourceInfo resItem( std::move( nameOfItem ) );
-                resItem.dataOffset = itemData.OffsetToData;
-                resItem.dataSize = itemData.Size;
+                PEResourceInfo resItem(
+                    std::move( nameOfItem ),
+                    dataSect, std::move( sectOff ), itemData.Size
+                );
                 resItem.codePage = itemData.CodePage;
                 resItem.reserved = itemData.Reserved;
 

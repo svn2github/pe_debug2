@@ -206,6 +206,18 @@ PEFile::PESection::~PESection( void )
         this->dataAlloc.Clear();
         LIST_CLEAR( this->dataAllocList.root );
     }
+    // * all active section data references
+    {
+        LIST_FOREACH_BEGIN( PESectionDataReference, this->dataRefList.root, sectionNode )
+        
+            item->theSect = NULL;
+            item->sectOffset = 0;
+            item->dataSize = 0;
+
+        LIST_FOREACH_END
+
+        LIST_CLEAR( this->dataRefList.root );
+    }
     // * all active placed offsets that refer to this section must be invalidated (write a dead-pointer instead)
     {
         LIST_FOREACH_BEGIN( PEPlacedOffset, this->RVAreferalList.root, targetNode )

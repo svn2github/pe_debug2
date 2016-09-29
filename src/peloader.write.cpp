@@ -154,6 +154,59 @@ inline decltype( auto ) FindMapValue( mapType& map, const keyType& key )
     return &foundIter->second;
 }
 
+namespace ResourceTools
+{
+
+struct item_allocInfo
+{
+    inline item_allocInfo( void )
+    {
+        dataitem_off = 0;
+    }
+    inline item_allocInfo( const item_allocInfo& right ) = delete;
+    inline item_allocInfo( item_allocInfo&& right ) = default;
+
+    inline item_allocInfo& operator = ( const item_allocInfo& right ) = delete;
+    inline item_allocInfo& operator = ( item_allocInfo&& right ) = default;
+
+    // Both entries are relative to the resource directory VA.
+    DWORD entry_off;        // Offset to the directory or item entry
+    DWORD name_off;         // Offset to the name string (unicode); only valid if child
+    DWORD dataitem_off;     // Offset to the resource data item info; only valid if leaf
+
+    std::unordered_map <size_t, item_allocInfo> children;
+};
+
+template <typename callbackType>
+static AINLINE void ForAllResourceItems( const PEFile::PEResourceDir& resDir, item_allocInfo& allocItem, callbackType& cb )
+{
+    size_t numChildren = resDir.children.size();
+
+    for ( size_t n = 0; n < numChildren; n++ )
+    {
+        const PEFile::PEResourceItem *childItem = resDir.children[ n ];
+
+        auto& childAllocItemNode = allocItem.children.find( n );
+
+        assert( childAllocItemNode != allocItem.children.end() );
+
+        item_allocInfo& childAllocItem = childAllocItemNode->second;
+
+        // Execute for us.
+        cb( childItem, childAllocItem );
+
+        if ( childItem->itemType == PEFile::PEResourceItem::eType::DIRECTORY )
+        {
+            const PEFile::PEResourceDir *childItemDir = (const PEFile::PEResourceDir*)childItem;
+
+            // Now for all children.
+            ForAllResourceItems( *childItemDir, childAllocItem, cb );
+        }
+    }
+}
+
+};
+
 void PEFile::CommitDataDirectories( void )
 {
     bool is64Bit = this->is64Bit;
@@ -545,24 +598,7 @@ void PEFile::CommitDataDirectories( void )
 
                 FileSpaceAllocMan resDataAlloc;
 
-                struct item_allocInfo
-                {
-                    inline item_allocInfo( void )
-                    {
-                        return;
-                    }
-                    inline item_allocInfo( const item_allocInfo& right ) = delete;
-                    inline item_allocInfo( item_allocInfo&& right ) = default;
-
-                    inline item_allocInfo& operator = ( const item_allocInfo& right ) = delete;
-                    inline item_allocInfo& operator = ( item_allocInfo&& right ) = default;
-
-                    // Both entries are relative to the resource directory VA.
-                    DWORD entry_off;        // Offset to the directory or item entry
-                    DWORD name_off;         // Offset to the name string (unicode); only valid if child
-
-                    std::unordered_map <size_t, item_allocInfo> children;
-                };
+                using namespace ResourceTools;
 
                 struct auxil
                 {
@@ -630,84 +666,60 @@ void PEFile::CommitDataDirectories( void )
                         return infoOut;
                     }
 
-                    static void AllocateResourceDirectory_nameStrings( FileSpaceAllocMan& allocMan, const PEResourceItem *item, item_allocInfo& allocItem )
+                    static void AllocateResourceDirectory_nameStrings( FileSpaceAllocMan& allocMan, const PEResourceDir& rootDir, item_allocInfo& allocItem )
                     {
-                        // If any name strings exists, allocate them.
-                        PEResourceItem::eType itemType = item->itemType;
-
-                        if ( itemType == PEResourceItem::eType::DIRECTORY )
+                        ForAllResourceItems( rootDir, allocItem,
+                            [&]( const PEResourceItem *childItem, item_allocInfo& childAllocItem )
                         {
-                            const PEResourceDir *itemDir = (const PEResourceDir*)item;
-
-                            // Check for any name strings we have to allocate.
-                            size_t numChildren = itemDir->children.size();
-
-                            for ( size_t n = 0; n < numChildren; n++ )
+                            // Any name string to allocate?
+                            if ( childItem->hasIdentifierName == false )
                             {
-                                const PEResourceItem *childItem = itemDir->children[ n ];
+                                const size_t nameItemCount = ( childItem->name.size() );
 
-                                auto& childAllocItemNode = allocItem.children.find( n );
+                                size_t nameDataSize = ( childItem->name.size() * sizeof(char16_t) );
 
-                                assert( childAllocItemNode != allocItem.children.end() );
+                                // Add the size of the header.
+                                nameDataSize += sizeof(std::uint16_t);
 
-                                item_allocInfo& childAllocItem = childAllocItemNode->second;
-
-                                // Any name string to allocate?
-                                if ( childItem->hasIdentifierName == false )
-                                {
-                                    const size_t nameItemCount = ( childItem->name.size() );
-
-                                    size_t nameDataSize = ( childItem->name.size() * sizeof(char16_t) );
-
-                                    // Add the size of the header.
-                                    nameDataSize += sizeof(std::uint16_t);
-
-                                    childAllocItem.name_off = allocMan.AllocateAny( nameDataSize, sizeof(char16_t) );
-                                }
-
-                                // Proceed into children.
-                                AllocateResourceDirectory_nameStrings( allocMan, childItem, childAllocItem );
+                                childAllocItem.name_off = allocMan.AllocateAny( nameDataSize, sizeof(char16_t) );
                             }
-
-                            // Done with all children.
-                        }
+                        });
 
                         // Processed this node.
                     }
 
-                    static void AllocateResourceDirectory_dataItems( FileSpaceAllocMan& allocMan, const PEResourceItem *item, item_allocInfo& allocItem )
+                    static void AllocateResourceDirectory_dataItems( FileSpaceAllocMan& allocMan, const PEResourceDir& rootDir, item_allocInfo& allocItem )
                     {
-                        // Now for the data items.
-                        PEResourceItem::eType itemType = item->itemType;
-
-                        if ( itemType == PEResourceItem::eType::DIRECTORY )
+                        ForAllResourceItems( rootDir, allocItem,
+                            [&]( const PEResourceItem *childItem, item_allocInfo& childAllocItem )
                         {
-                            const PEResourceDir *itemDir = (const PEResourceDir*)item;
-
-                            // We need to check all children.
-                            size_t numChildren = itemDir->children.size();
-
-                            for ( size_t n = 0; n < numChildren; n++ )
+                            if ( childItem->itemType == PEResourceItem::eType::DATA )
                             {
-                                const PEResourceItem *childItem = itemDir->children[ n ];
+                                // Single item allocation.
+                                const size_t itemSize = sizeof(IMAGE_RESOURCE_DATA_ENTRY);
 
-                                auto& childAllocItemNode = allocItem.children.find( n );
-
-                                assert( childAllocItemNode != allocItem.children.end() );
-
-                                item_allocInfo& childAllocItem = childAllocItemNode->second;
-
-                                // We go into all children items.
-                                AllocateResourceDirectory_dataItems( allocMan, childItem, childAllocItem );
+                                childAllocItem.entry_off = allocMan.AllocateAny( itemSize, sizeof(DWORD) );
                             }
-                        }
-                        else if ( itemType == PEResourceItem::eType::DATA )
-                        {
-                            // Single item allocation.
-                            const size_t itemSize = sizeof(IMAGE_RESOURCE_DATA_ENTRY);
+                        });
+                    }
 
-                            allocItem.entry_off = allocMan.AllocateAny( itemSize, sizeof(DWORD) );
-                        }
+                    static void AllocateResourceDirectory_dataFiles( FileSpaceAllocMan& allocMan, const PEResourceDir& rootDir, item_allocInfo& allocItem )
+                    {
+                        ForAllResourceItems( rootDir, allocItem,
+                            [&]( const PEResourceItem *childItem, item_allocInfo& childAllocItem )
+                        {
+                            if ( childItem->itemType == PEResourceItem::eType::DATA )
+                            {
+                                // TODO: make sure to update this once we support resource data injection!
+
+                                const PEResourceInfo *childInfoItem = (const PEResourceInfo*)childItem;
+
+                                // Allocate space inside of our resource section.
+                                const size_t resFileSize = childInfoItem->sectRef.GetDataSize();
+
+                                childAllocItem.dataitem_off = allocMan.AllocateAny( resFileSize, 1 );
+                            }
+                        });
                     }
 
                     static void WriteResourceDirectory( const PEResourceDir& writeNode, const item_allocInfo& allocNode, PESectionAllocation& writeBuf )
@@ -811,9 +823,41 @@ void PEFile::CommitDataDirectories( void )
                             {
                                 const PEResourceInfo *childData = (const PEResourceInfo*)childItem;
 
+                                // TODO: once we support injecting data buffers into the resource directory,
+                                // we will have to extend this with memory stream reading support.
+
+                                std::uint32_t fileWriteOff = childAllocInfo.dataitem_off;
+
+                                assert( fileWriteOff != 0 );    // invalid because already taken by root directory info.
+
+                                PEDataStream fileSrcStream = PEDataStream::fromDataRef( childData->sectRef );
+
+                                // Write data over.
+                                const std::uint32_t fileDataSize = childData->sectRef.GetDataSize();
+                                {
+                                    char buffer[ 0x4000 ];
+
+                                    std::uint32_t curDataOff = 0;
+                                    
+                                    while ( curDataOff < fileDataSize )
+                                    {
+                                        size_t actualProcCount = std::min( fileDataSize - curDataOff, sizeof(buffer) );
+
+                                        fileSrcStream.Read( buffer, actualProcCount );
+
+                                        writeBuf.WriteToSection( buffer, actualProcCount, fileWriteOff + curDataOff );
+
+                                        curDataOff += sizeof(buffer);
+                                    }
+                                }
+
+                                std::uint32_t dataEntryOff = childAllocInfo.entry_off;
+
                                 IMAGE_RESOURCE_DATA_ENTRY nativeDataEntry;
-                                nativeDataEntry.OffsetToData = childData->dataOffset;
-                                nativeDataEntry.Size = childData->dataSize;
+                                // We need to write the RVA later.
+                                nativeDataEntry.OffsetToData = 0;
+                                writeBuf.RegisterTargetRVA( dataEntryOff + offsetof(IMAGE_RESOURCE_DATA_ENTRY, OffsetToData), writeBuf.GetSection(), writeBuf.ResolveInternalOffset( fileWriteOff ) );
+                                nativeDataEntry.Size = fileDataSize;
                                 nativeDataEntry.CodePage = childData->codePage;
                                 nativeDataEntry.Reserved = childData->reserved;
 
@@ -835,10 +879,13 @@ void PEFile::CommitDataDirectories( void )
                 item_allocInfo allocInfo = auxil::AllocateResourceDirectory_dirData( resDataAlloc, &resRootDir );
 
                 // Then come the name strings.
-                auxil::AllocateResourceDirectory_nameStrings( resDataAlloc, &resRootDir, allocInfo );
+                auxil::AllocateResourceDirectory_nameStrings( resDataAlloc, resRootDir, allocInfo );
 
                 // And last but not least the data entries.
-                auxil::AllocateResourceDirectory_dataItems( resDataAlloc, &resRootDir, allocInfo );
+                auxil::AllocateResourceDirectory_dataItems( resDataAlloc, resRootDir, allocInfo );
+
+                // Resource files must be allocated in the resource section, by documentation.
+                auxil::AllocateResourceDirectory_dataFiles( resDataAlloc, resRootDir, allocInfo );
 
                 assert( allocInfo.entry_off == 0 );
                 allocInfo.name_off = 0;     // the root directory has no name.
@@ -944,6 +991,9 @@ void PEFile::CommitDataDirectories( void )
             writeSect->stream.Seek( writeOff );
             writeSect->stream.WriteUInt32( targetRVA );
         }
+
+        // Since we have committed the RVAs into binary memory, no need for the meta-data anymore.
+        item->placedOffsets.clear();
 
     LIST_FOREACH_END
 }
