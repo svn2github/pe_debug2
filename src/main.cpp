@@ -29,7 +29,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        const char *inputName = "pe_debug.exe";
+        const char *inputName = "pe_debug_d.exe";
 
         std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 

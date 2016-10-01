@@ -12,6 +12,8 @@
 #include <unordered_map>
 #include <set>
 
+#include "peloader.common.h"
+
 namespace PEStructures
 {
 
@@ -68,6 +70,14 @@ struct IMAGE_RESOURCE_DATA_ENTRY
     std::uint32_t Size;
     std::uint32_t CodePage;
     std::uint32_t Reserved;
+};
+
+struct IMAGE_ATTRIB_CERT_DESC
+{
+    std::uint32_t Size;
+    std::uint16_t Revision;
+    std::uint16_t CertificateType;
+    // Followed by the actual certificate.
 };
 
 };
@@ -410,6 +420,15 @@ private:
             friend struct PESection;
             friend struct PEDataStream;
 
+            inline PESectionDataReference( void )
+            {
+                this->theSect = NULL;
+                this->sectOffset = 0;
+                this->dataSize = 0;
+
+                // No section means not adding to list.
+            }
+
             inline PESectionDataReference( PESection *theSect, std::uint32_t sectOffset, std::uint32_t dataSize = 0 )
             {
                 this->theSect = theSect;
@@ -464,7 +483,8 @@ private:
             {
                 if ( this->theSect == NULL )
                 {
-                    throw std::exception( "attempt to get RVA from invalid PE section data reference" );
+                    // Zero RVA is valid.
+                    return 0;
                 }
 
                 return this->theSect->ResolveRVA( this->sectOffset );
@@ -472,6 +492,11 @@ private:
 
             inline std::uint32_t GetDataSize( void ) const
             {
+                if ( this->theSect == NULL )
+                {
+                    return 0;
+                }
+
                 return this->dataSize;
             }
 
@@ -913,12 +938,12 @@ private:
         }
 
         // Function to get the section and the offset into it for a RVA.
-        inline bool GetPEDataLocation( std::uint32_t virtAddr, std::uint32_t *allocOffOut, PESection **allocSectOut = NULL )
+        inline bool GetPEDataLocation( std::uint32_t rvirtAddr, std::uint32_t *allocOffOut, PESection **allocSectOut = NULL ) const
         {
             typedef sliceOfData <std::uint32_t> memSlice_t;
 
             // Create a memory slice of the request.
-            memSlice_t requestRegion( virtAddr, 1 );
+            memSlice_t requestRegion( rvirtAddr, 1 );
 
             LIST_FOREACH_BEGIN( PESection, this->sectionList.root, sectionNode )
         
@@ -947,7 +972,7 @@ private:
 
                         if ( allocOffOut )
                         {
-                            *allocOffOut = (uint32_t)( virtAddr - sectAddr );
+                            *allocOffOut = (uint32_t)( rvirtAddr - sectAddr );
                         }
 
                         return true;
@@ -962,7 +987,7 @@ private:
 
         // Function to get a data pointer of data directories.
         inline bool GetPEDataStream(
-            std::uint32_t virtAddr, PEDataStream& streamOut,
+            std::uint32_t rvirtAddr, PEDataStream& streamOut,
             PESection **allocSectOut = NULL
         )
         {
@@ -970,7 +995,7 @@ private:
             std::uint32_t offsetIntoSect;
             PESection *allocSect;
 
-            bool gotLocation = GetPEDataLocation( virtAddr, &offsetIntoSect, &allocSect );
+            bool gotLocation = GetPEDataLocation( rvirtAddr, &offsetIntoSect, &allocSect );
 
             if ( !gotLocation )
                 return false;
@@ -1130,6 +1155,51 @@ private:
     };
 
     PESectionMan sections;
+
+    // We need to know about file-space section allocations.
+    // This is mainly used for reflection purposes during PE serialization.
+    struct sect_allocInfo
+    {
+        std::uint32_t alloc_off;
+    };
+
+    typedef std::unordered_map <std::uint32_t, sect_allocInfo> sect_allocMap_t;
+
+    struct PEFileSpaceData
+    {
+        inline PEFileSpaceData( void )
+        {
+            // We start out without any storage.
+            this->storageType = eStorageType::NONE;
+        }
+
+        inline PEFileSpaceData( const PEFileSpaceData& right ) = delete;
+        inline PEFileSpaceData( PEFileSpaceData&& right ) = default;
+
+        inline PEFileSpaceData& operator = ( const PEFileSpaceData& right ) = delete;
+        inline PEFileSpaceData& operator = ( PEFileSpaceData&& right ) = default;
+
+        // Management API.
+        void ReadFromFile( CFile *peStream, const PESectionMan& sections, std::uint32_t rva, std::uint32_t filePtr, std::uint32_t dataSize );
+
+        void ResolveDataPhaseAllocation( std::uint32_t& rvaOut, std::uint32_t& sizeOut ) const;
+        std::uint32_t ResolveFinalizationPhase( CFile *peStream, PEloader::FileSpaceAllocMan& allocMan, const sect_allocMap_t& sectFileAlloc ) const;
+
+        // Call this to check if this storage even needs to be finalized.
+        bool NeedsFinalizationPhase( void ) const;
+
+    private:
+        enum class eStorageType
+        {
+            SECTION,            // stores data within address space
+            FILE,               // stores data appended after the PE file
+            NONE                // no storage at all
+        };
+
+        eStorageType storageType;
+        PESectionAllocation sectRef;    // valid if storageType == SECTION
+        std::vector <char> fileRef;     // valid if storageType == FILE
+    };
 
 public:
     // Generic section management API.
@@ -1308,9 +1378,9 @@ public:
 
     struct PERuntimeFunction
     {
-        std::uint32_t beginAddr;
-        std::uint32_t endAddr;
-        std::uint32_t unwindInfo;
+        PESectionDataReference beginAddrRef;
+        PESectionDataReference endAddrRef;
+        PESectionDataReference unwindInfoRef;
     };
     std::vector <PERuntimeFunction> exceptRFs;
 
@@ -1318,16 +1388,10 @@ public:
 
     struct PESecurity
     {
-        inline PESecurity( void )
-        {
-            this->secDataOffset = 0;
-            this->secDataSize = 0;
-        }
-
-        std::uint32_t secDataOffset;    // this is file offset NOT RVA
-        std::uint32_t secDataSize;
+        // We just keep the certificate data around for anyone to care about
+        PEFileSpaceData certStore;
     };
-    PESecurity security;
+    PESecurity securityCookie;
 
     struct PEBaseReloc
     {
@@ -1351,37 +1415,33 @@ public:
 
     PESectionAllocation baseRelocAllocEntry;
 
-    struct PEDebug
+    struct PEDebugDesc
     {
-        inline PEDebug( void )
+        inline PEDebugDesc( void )
         {
             this->characteristics = 0;
             this->timeDateStamp = 0;
             this->majorVer = 0;
             this->minorVer = 0;
             this->type = 0;
-            this->sizeOfData = 0;
-            this->addrOfRawData = 0;
-            this->ptrToRawData = 0;
         }
 
-        inline PEDebug( const PEDebug& right ) = delete;
-        inline PEDebug( PEDebug&& right ) = default;
+        inline PEDebugDesc( const PEDebugDesc& right ) = delete;
+        inline PEDebugDesc( PEDebugDesc&& right ) = default;
 
-        inline PEDebug& operator = ( const PEDebug& right ) = delete;
-        inline PEDebug& operator = ( PEDebug&& right ) = default;
+        inline PEDebugDesc& operator = ( const PEDebugDesc& right ) = delete;
+        inline PEDebugDesc& operator = ( PEDebugDesc&& right ) = default;
 
         std::uint32_t characteristics;
         std::uint32_t timeDateStamp;
         std::uint16_t majorVer, minorVer;
-        std::uint32_t type;
-        std::uint32_t sizeOfData;
-        std::uint32_t addrOfRawData;
-        std::uint32_t ptrToRawData;
+        std::uint32_t type;             // can be any documented or undocumented value
 
-        PESectionAllocation allocEntry;
+        PEFileSpaceData dataStore;
     };
-    PEDebug debugInfo;
+    std::vector <PEDebugDesc> debugDescs;
+
+    PESectionAllocation debugDescsAlloc;
 
     struct PEGlobalPtr
     {
@@ -1412,6 +1472,21 @@ public:
         inline PEThreadLocalStorage& operator = ( const PEThreadLocalStorage& right ) = delete;
         inline PEThreadLocalStorage& operator = ( PEThreadLocalStorage&& right ) = default;
 
+        inline bool NeedsWriting( void ) const
+        {
+            if ( this->startOfRawData != 0 ||
+                 this->endOfRawData != 0 ||
+                 this->addressOfIndices != 0 ||
+                 this->addressOfCallbacks != 0 ||
+                 this->sizeOfZeroFill != 0 ||
+                 this->characteristics != 0 )
+            {
+                return true;
+            }
+
+            return false;
+        }
+
         std::uint64_t startOfRawData;
         std::uint64_t endOfRawData;
         std::uint64_t addressOfIndices;
@@ -1425,33 +1500,7 @@ public:
 
     struct PELoadConfig
     {
-        inline PELoadConfig( void )
-        {
-            this->timeDateStamp = 0;
-            this->majorVersion = 0;
-            this->minorVersion = 0;
-            this->globFlagsClear = 0;
-            this->globFlagsSet = 0;
-            this->critSecDefTimeOut = 0;
-            this->deCommitFreeBlockThreshold = 0;
-            this->deCommitTotalFreeThreshold = 0;
-            this->lockPrefixTable = 0;
-            this->maxAllocSize = 0;
-            this->virtualMemoryThreshold = 0;
-            this->processAffinityMask = 0;
-            this->processHeapFlags = 0;
-            this->CSDVersion = 0;
-            this->reserved1 = 0;
-            this->editList = 0;
-            this->securityCookie = 0;
-            this->SEHandlerTable = 0;
-            this->SEHandlerCount = 0;
-            this->guardCFCheckFunctionPtr = 0;
-            this->reserved2 = 0;
-            this->guardCFFunctionTable = 0;
-            this->guardCFFunctionCount = 0;
-            this->guardFlags = 0;
-        }
+        inline PELoadConfig( void ) = default;
 
         inline PELoadConfig( const PELoadConfig& right ) = delete;
         inline PELoadConfig( PELoadConfig&& right ) = default;
@@ -1459,29 +1508,31 @@ public:
         inline PELoadConfig& operator = ( const PELoadConfig& right ) = delete;
         inline PELoadConfig& operator = ( PELoadConfig&& right ) = default;
 
-        std::uint32_t timeDateStamp;
-        std::uint16_t majorVersion, minorVersion;
-        std::uint32_t globFlagsClear;
-        std::uint32_t globFlagsSet;
-        std::uint32_t critSecDefTimeOut;
-        std::uint64_t deCommitFreeBlockThreshold;
-        std::uint64_t deCommitTotalFreeThreshold;
-        std::uint64_t lockPrefixTable;
-        std::uint64_t maxAllocSize;
-        std::uint64_t virtualMemoryThreshold;
-        std::uint64_t processAffinityMask;
-        std::uint32_t processHeapFlags;
-        std::uint16_t CSDVersion;
-        std::uint16_t reserved1;
-        std::uint64_t editList;
-        std::uint64_t securityCookie;
-        std::uint64_t SEHandlerTable;
-        std::uint64_t SEHandlerCount;
-        std::uint64_t guardCFCheckFunctionPtr;
-        std::uint64_t reserved2;
-        std::uint64_t guardCFFunctionTable;
-        std::uint64_t guardCFFunctionCount;
-        std::uint32_t guardFlags;
+        std::uint32_t timeDateStamp = 0;
+        std::uint16_t majorVersion, minorVersion = 0;
+        std::uint32_t globFlagsClear = 0;
+        std::uint32_t globFlagsSet = 0;
+        std::uint32_t critSecDefTimeOut = 0;
+        std::uint64_t deCommitFreeBlockThreshold = 0;
+        std::uint64_t deCommitTotalFreeThreshold = 0;
+        std::uint64_t lockPrefixTable = 0;
+        std::uint64_t maxAllocSize = 0;
+        std::uint64_t virtualMemoryThreshold = 0;
+        std::uint64_t processAffinityMask = 0;
+        std::uint32_t processHeapFlags = 0;
+        std::uint16_t CSDVersion = 0;
+        std::uint16_t reserved1 = 0;
+        std::uint64_t editList = 0;
+        std::uint64_t securityCookie = 0;
+        std::uint64_t SEHandlerTable = 0;
+        std::uint64_t SEHandlerCount = 0;
+        std::uint64_t guardCFCheckFunctionPtr = 0;
+        std::uint64_t reserved2 = 0;
+        std::uint64_t guardCFFunctionTable = 0;
+        std::uint64_t guardCFFunctionCount = 0;
+        std::uint32_t guardFlags = 0;
+
+        bool isNeeded = false;
 
         PESectionAllocation allocEntry;
     };

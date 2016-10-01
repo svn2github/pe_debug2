@@ -4,6 +4,64 @@
 
 #include "peloader.internal.hxx"
 
+void PEFile::PEFileSpaceData::ReadFromFile( CFile *peStream, const PESectionMan& sections, std::uint32_t rva, std::uint32_t filePtr, std::uint32_t dataSize )
+{
+    // Determine the storage type of this debug information.
+    eStorageType storageType;
+
+    if ( rva != 0 )
+    {
+        // Since we are allocated on address space, we assume its entirely allocated.
+        // There is no special storage required.
+        storageType = eStorageType::SECTION;
+    }
+    else if ( filePtr != 0 )
+    {
+        // Being placed out-of-band is very interesting because you essentially are an
+        // attachment appended to the PE file, basically being not a part of it at all.
+        // This storage type is assumingly legacy.
+        storageType = eStorageType::FILE;
+    }
+    else
+    {
+        // Otherwise we can have no storage at all, which is fine.
+        storageType = eStorageType::NONE;
+    }
+
+    this->storageType = storageType;
+
+    // Register data presence depending on the storage type.
+    if ( storageType == eStorageType::SECTION )
+    {
+        PESection *fileDataSect;
+
+        bool gotLocation = sections.GetPEDataLocation( rva, NULL, &fileDataSect );
+
+        if ( !gotLocation )
+        {
+            throw std::exception( "failed to get section location of PE file-space data" );
+        }
+
+        fileDataSect->SetPlacedMemory( this->sectRef, rva, dataSize );
+    }
+    else if ( storageType == eStorageType::FILE )
+    {
+        // In this case we have to read the data out of the file manually.
+        // After all, debug information is a 'special citizen' of the PE standard.
+        peStream->SeekNative( filePtr, SEEK_SET );
+
+        this->fileRef.resize( dataSize );
+
+        size_t readCount = peStream->Read( this->fileRef.data(), 1, dataSize );
+
+        if ( readCount != dataSize )
+        {
+            throw std::exception( "truncated PE file-space data error" );
+        }
+    }
+    // Having no storage is perfectly fine.
+}
+
 void PEFile::LoadFromDisk( CFile *peStream )
 {
     // We read the DOS stub.
@@ -451,8 +509,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
         }
     }
 
-    // That is the end of the executable data reading.
+    // This is the (official) end of the executable data reading.
     // Now we dispatch onto the data directories, which base on things found inside the sections.
+
+    // NOTE: the DEBUG DIRECTORY probably needs to use peStream again.
 
     // Load the directory information now.
     // We decide to create meta-data structs out of them.
@@ -893,24 +953,59 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 IMAGE_RUNTIME_FUNCTION_ENTRY func;
                 rtFuncsStream.Read( &func, sizeof(func) );
 
+                // Since the runtime function entry stores RVAs, we want to remember them
+                // relocation independent.
+                PESection *beginAddrSect;
+                std::uint32_t beginAddrSectOff;
+                {
+                    bool gotLocation = sections.GetPEDataLocation( func.BeginAddress, &beginAddrSectOff, &beginAddrSect );
+
+                    if ( !gotLocation )
+                    {
+                        throw std::exception( "invalid PE runtime function begin address" );
+                    }
+                }
+                PESection *endAddrSect;
+                std::uint32_t endAddrSectOff;
+                {
+                    bool gotLocation = sections.GetPEDataLocation( func.EndAddress, &endAddrSectOff, &endAddrSect );
+
+                    if ( !gotLocation )
+                    {
+                        throw std::exception( "invalid PE runtime function end address" );
+                    }
+                }
+                PESection *unwindInfoSect;
+                std::uint32_t unwindInfoSectOff;
+                {
+                    bool gotLocation = sections.GetPEDataLocation( func.UnwindInfoAddress, &unwindInfoSectOff, &unwindInfoSect );
+
+                    if ( !gotLocation )
+                    {
+                        throw std::exception( "invalid PE runtime function unwind info address" );
+                    }
+                }
+
                 PERuntimeFunction funcInfo;
-                funcInfo.beginAddr = func.BeginAddress;
-                funcInfo.endAddr = func.EndAddress;
-                funcInfo.unwindInfo = func.UnwindData;
+                funcInfo.beginAddrRef = PESectionDataReference( beginAddrSect, beginAddrSectOff );
+                funcInfo.endAddrRef = PESectionDataReference( endAddrSect, endAddrSectOff );
+                funcInfo.unwindInfoRef = PESectionDataReference( unwindInfoSect, unwindInfoSectOff );
 
                 exceptRFs.push_back( std::move( funcInfo ) );
             }
         }
     }
 
-    // * Security cookie.
-    PESecurity security;
+    // * ATTRIBUTE CERTIFICATES.
+    PESecurity securityCookie;
     {
-        const IMAGE_DATA_DIRECTORY& secDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_SECURITY ];
+        const IMAGE_DATA_DIRECTORY& certDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_SECURITY ];
 
-        security.secDataOffset = secDir.VirtualAddress;
-        security.secDataSize = secDir.Size;
-        // For now we trust that it is valid.
+        // VirtualAddress in this data directory is a file pointer.
+        std::uint32_t certFilePtr = certDir.VirtualAddress;
+        std::uint32_t certBufSize = certDir.Size;
+
+        securityCookie.certStore.ReadFromFile( peStream, sections, 0, certFilePtr, certBufSize );
     }
 
     // * BASE RELOC.
@@ -988,7 +1083,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     }
 
     // * DEBUG.
-    PEDebug debugInfo;
+    decltype(this->debugDescs) debugDescs;
     {
         const IMAGE_DATA_DIRECTORY& debugDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_DEBUG ];
 
@@ -1003,23 +1098,37 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     throw std::exception( "invalid PE debug directory" );
             }
 
-            debugEntrySection->SetPlacedMemory( debugInfo.allocEntry, debugDir.VirtualAddress, debugDir.Size );
+            DWORD debugDirSize = debugDir.Size;
 
-            IMAGE_DEBUG_DIRECTORY debugEntry;
-            debugEntryStream.Read( &debugEntry, sizeof(debugEntry) );
+            debugEntrySection->SetPlacedMemory( this->debugDescsAlloc, debugDir.VirtualAddress, debugDirSize );
 
-            // We store this debug information entry.
-            // Debug information can be of many types and we cannot ever handle all of them!
-            debugInfo.characteristics = debugEntry.Characteristics;
-            debugInfo.timeDateStamp = debugEntry.TimeDateStamp;
-            debugInfo.majorVer = debugEntry.MajorVersion;
-            debugInfo.minorVer = debugEntry.MinorVersion;
-            debugInfo.type = debugEntry.Type;
-            debugInfo.sizeOfData = debugEntry.SizeOfData;
-            debugInfo.addrOfRawData = debugEntry.AddressOfRawData;
-            debugInfo.ptrToRawData = debugEntry.PointerToRawData;
+            // Get the amount of debug descriptors available.
+            const DWORD numDescriptors = ( debugDirSize / sizeof(IMAGE_DEBUG_DIRECTORY) );
 
-            // TODO: think of a way to parse this information.
+            for ( size_t n = 0; n < numDescriptors; n++ )
+            {
+                IMAGE_DEBUG_DIRECTORY debugEntry;
+                debugEntryStream.Read( &debugEntry, sizeof(debugEntry) );
+
+                // We store this debug information entry.
+                // Debug information can be of many types and we cannot ever handle all of them!
+                PEDebugDesc debugInfo;
+                debugInfo.characteristics = debugEntry.Characteristics;
+                debugInfo.timeDateStamp = debugEntry.TimeDateStamp;
+                debugInfo.majorVer = debugEntry.MajorVersion;
+                debugInfo.minorVer = debugEntry.MinorVersion;
+                debugInfo.type = debugEntry.Type;
+
+                // Fetch the debug data from the file, so that we do not depend on "file pointers"
+                // for PE structures.
+                debugInfo.dataStore.ReadFromFile(
+                    peStream, sections,
+                    debugEntry.AddressOfRawData, debugEntry.PointerToRawData, debugEntry.SizeOfData
+                );
+
+                // Store our information.
+                debugDescs.push_back( std::move( debugInfo ) );
+            }
         }
     }
 
@@ -1168,6 +1277,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 loadConfig.guardCFFunctionCount = lcfgDir.GuardCFFunctionCount;
                 loadConfig.guardFlags = lcfgDir.GuardFlags;
             }
+
+            // We kinda need the load config.
+            loadConfig.isNeeded = true;
 
             lcfgDirSect->SetPlacedMemory( loadConfig.allocEntry, lcfgDataDir.VirtualAddress, lcfgDataDir.Size );
         }
@@ -1343,9 +1455,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
     this->imports = std::move( impDescs );
     this->resourceRoot = std::move( resourceRoot );
     this->exceptRFs = std::move( exceptRFs );
-    this->security = std::move( security );
+    this->securityCookie = std::move( securityCookie );
     this->baseRelocs = std::move( baseRelocs );
-    this->debugInfo = std::move( debugInfo );
+    this->debugDescs = std::move( debugDescs );
     this->globalPtr = std::move( globalPtr );
     this->tlsInfo = std::move( tlsInfo );
     this->loadConfig = std::move( loadConfig );

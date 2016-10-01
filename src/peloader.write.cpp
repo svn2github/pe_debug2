@@ -5,19 +5,9 @@
 
 #include <unordered_map>
 
-struct PEAllocFileAllocProxy
-{
-    template <typename sliceType>
-    AINLINE bool IsInAllocationRange( const sliceType& slice )
-    {
-        // TODO: add limit checking for 32bit allocatibility here (if required).
-        return true;
-    }
-};
+using namespace PEloader;
 
 // Writing helpers.
-typedef InfiniteCollisionlessBlockAllocator <DWORD> peFileAlloc;
-
 AINLINE void PEWrite( CFile *peStream, DWORD peOff, DWORD peSize, const void *dataPtr )
 {
     // Seek to the right offset.
@@ -74,74 +64,6 @@ AINLINE void writeContent( peFileAlloc& fileSpaceAlloc, CFile *peStream, peFileA
     // Write things.
     PEWrite( peStream, dataPos, peSize, dataPtr );
 }
-
-struct FileSpaceAllocMan
-{
-    inline FileSpaceAllocMan( void )
-    {
-        return;
-    }
-
-    inline ~FileSpaceAllocMan( void )
-    {
-        // Free all allocations that have not yet been freed (which is every alloc).
-        while ( !LIST_EMPTY( this->internalAlloc.blockList.root ) )
-        {
-            peFileAlloc::block_t *item = LIST_GETITEM( peFileAlloc::block_t, this->internalAlloc.blockList.root.next, node );
-
-            alloc_block_t *allocBlock = LIST_GETITEM( alloc_block_t, item, allocatorEntry );
-
-            // Remove us from registration.
-            this->internalAlloc.RemoveBlock( item );
-
-            // Delete us.
-            delete allocBlock;
-        }
-    }
-
-    inline DWORD AllocateAny( DWORD peSize, DWORD peAlignment = sizeof(DWORD) )
-    {
-        peFileAlloc::allocInfo alloc_data;
-
-        if ( internalAlloc.FindSpace( peSize, alloc_data, peAlignment ) == false )
-        {
-            throw std::exception( "failed to find PE file space for allocation" );
-        }
-
-        alloc_block_t *alloc_savior = new alloc_block_t();
-        
-        internalAlloc.PutBlock( &alloc_savior->allocatorEntry, alloc_data );
-
-        return alloc_savior->allocatorEntry.slice.GetSliceStartPoint();
-    }
-
-    inline void AllocateAt( DWORD peOff, DWORD peSize )
-    {
-        peFileAlloc::allocInfo alloc_data;
-
-        if ( internalAlloc.ObtainSpaceAt( peOff, peSize, alloc_data ) == false )
-        {
-            throw std::exception( "failed to obtain PE file space at presignated offset" );
-        }
-
-        alloc_block_t *alloc_savior = new alloc_block_t();
-
-        internalAlloc.PutBlock( &alloc_savior->allocatorEntry, alloc_data );
-    }
-
-    inline DWORD GetSpanSize( DWORD alignment )
-    {
-        return ALIGN_SIZE( internalAlloc.GetSpanSize(), alignment );
-    }
-
-private:
-    peFileAlloc internalAlloc;
-
-    struct alloc_block_t
-    {
-        peFileAlloc::block_t allocatorEntry;
-    };
-};
 
 template <typename keyType, typename mapType>
 inline decltype( auto ) FindMapValue( mapType& map, const keyType& key )
@@ -206,6 +128,84 @@ static AINLINE void ForAllResourceItems( const PEFile::PEResourceDir& resDir, it
 }
 
 };
+
+// PHASE #1.
+void PEFile::PEFileSpaceData::ResolveDataPhaseAllocation( std::uint32_t& rvaOut, std::uint32_t& sizeOut ) const
+{
+    // If we are section-based data, we can easily register ourselves here.
+    // Otherwise we have to wait until all data has been written into stream.
+    eStorageType storageType = this->storageType;
+
+    if ( storageType == eStorageType::SECTION )
+    {
+        // We can write most of it here that matters.
+        sizeOut = (std::uint32_t)this->sectRef.GetDataSize();
+        // One special optimization here is that data cannot exist on temporary sections here.
+        // So we can resolve the offset right away!
+        rvaOut = this->sectRef.ResolveOffset( 0 );
+    }
+    else if ( storageType == eStorageType::FILE )
+    {
+        // Wait until later.
+        sizeOut = (std::uint32_t)this->fileRef.size();
+        rvaOut = 0;   // will stay zero.
+    }
+    else
+    {
+        // This could be either none or unknown.
+        sizeOut = 0;
+        rvaOut = 0;
+    }
+}
+
+// PHASE #2.
+std::uint32_t PEFile::PEFileSpaceData::ResolveFinalizationPhase( CFile *peStream, FileSpaceAllocMan& allocMan, const sect_allocMap_t& sectFileAlloc ) const
+{
+    std::uint32_t fileDataOff = 0;
+
+    eStorageType storageType = this->storageType;
+
+    if ( storageType == eStorageType::SECTION )
+    {
+        // Calculate the file pointer from the allocated offsets for the sections.
+        PESection *dataSect = this->sectRef.GetSection();
+
+        const auto& fileSectAllocNode = sectFileAlloc.find( dataSect->GetVirtualAddress() );
+
+        assert( fileSectAllocNode != sectFileAlloc.end() );
+
+        const sect_allocInfo& fileSectAllocInfo = fileSectAllocNode->second;
+
+        fileDataOff = ( fileSectAllocInfo.alloc_off + this->sectRef.ResolveInternalOffset( 0 ) );
+    }
+    else if ( storageType == eStorageType::FILE )
+    {
+        // For this we need to allocate new space on the executable.
+        std::uint32_t dataSize = (std::uint32_t)this->fileRef.size();
+
+        fileDataOff = allocMan.AllocateAny( dataSize, 1 );
+
+        // Also write it.
+        PEWrite( peStream, fileDataOff, dataSize, this->fileRef.data() );
+    }
+
+    return fileDataOff;
+}
+
+bool PEFile::PEFileSpaceData::NeedsFinalizationPhase( void ) const
+{
+    eStorageType storageType = this->storageType;
+
+    // We need to establish a file pointer for data that is present.
+    if ( storageType == eStorageType::SECTION ||
+         storageType == eStorageType::FILE )
+    {
+        return true;
+    }
+
+    // We do not need a file pointer.
+    return false;
+}
 
 void PEFile::CommitDataDirectories( void )
 {
@@ -924,9 +924,9 @@ void PEFile::CommitDataDirectories( void )
                     const PERuntimeFunction& rfEntry = this->exceptRFs[ n ];
 
                     IMAGE_RUNTIME_FUNCTION_ENTRY funcInfo;
-                    funcInfo.BeginAddress = rfEntry.beginAddr;
-                    funcInfo.EndAddress = rfEntry.endAddr;
-                    funcInfo.UnwindInfoAddress = rfEntry.unwindInfo;
+                    funcInfo.BeginAddress = rfEntry.beginAddrRef.GetRVA();
+                    funcInfo.EndAddress = rfEntry.endAddrRef.GetRVA();
+                    funcInfo.UnwindInfoAddress = rfEntry.unwindInfoRef.GetRVA();
 
                     const size_t rfEntryOff = ( n * sizeof(IMAGE_RUNTIME_FUNCTION_ENTRY) );
 
@@ -939,14 +939,279 @@ void PEFile::CommitDataDirectories( void )
 
             // nothing to allocate for security cookie.
 
+            // *** BASE RELOC has to be written last because commit operations can spawn relocations.
+
+            // * DEBUG.
+            // NOTE: debug data is a 'special citizen' of the PE file standard.
+            //       this means that it can write outside of the allocated section area.
+            //       phase two of the debug write phase is after sections are written down.
+            const auto& debugDescs = this->debugDescs;
+
+            size_t numDebugDescs = debugDescs.size();
+            
+            if ( numDebugDescs > 0 )
+            {
+                std::uint32_t peNumDebugDescs = (std::uint32_t)numDebugDescs;
+
+                // The entire debug directory is an array of debug descriptors.
+                std::uint32_t debugArraySize = ( sizeof(IMAGE_DEBUG_DIRECTORY) * peNumDebugDescs );
+
+                PESectionAllocation debugDescsAlloc;
+                rdonlySect.Allocate( debugDescsAlloc, debugArraySize, sizeof(DWORD) );
+
+                for ( size_t n = 0; n < numDebugDescs; n++ )
+                {
+                    const PEDebugDesc& debugEntry = debugDescs[ n ];
+
+                    IMAGE_DEBUG_DIRECTORY nativeDebug;
+                    nativeDebug.Characteristics = debugEntry.characteristics;
+                    nativeDebug.TimeDateStamp = debugEntry.timeDateStamp;
+                    nativeDebug.MajorVersion = debugEntry.majorVer;
+                    nativeDebug.MinorVersion = debugEntry.minorVer;
+                    nativeDebug.Type = debugEntry.type;
+
+                    // Resolve the data reference (PHASE #1).
+                    {
+                        std::uint32_t rva, dataSize;
+
+                        debugEntry.dataStore.ResolveDataPhaseAllocation( rva, dataSize );
+
+                        nativeDebug.AddressOfRawData = rva;
+                        nativeDebug.SizeOfData = dataSize;
+                    }
+
+                    // We probably write this later.
+                    nativeDebug.PointerToRawData = 0;
+
+                    // Let's write ourselves for now!
+                    debugDescsAlloc.WriteToSection( &nativeDebug, sizeof(nativeDebug), n * sizeof(IMAGE_DEBUG_DIRECTORY) );
+                }
+
+                // Done writing all debug descriptors.
+
+                this->debugDescsAlloc = std::move( debugDescsAlloc );
+            }
+
+            // architecture does not need writing.
+
+            // global pointer does not need writing.
+
+            // * THREAD LOCAL STORAGE.
+            PEThreadLocalStorage& tlsInfo = this->tlsInfo;
+
+            if ( tlsInfo.NeedsWriting() )
+            {
+                // We want to support PE32 and PE32+. So determine the size of the TLS.
+                std::uint32_t tlsDirSize;
+
+                if ( is64Bit )
+                {
+                    tlsDirSize = sizeof(IMAGE_TLS_DIRECTORY64);
+                }
+                else
+                {
+                    tlsDirSize = sizeof(IMAGE_TLS_DIRECTORY32);
+                }
+
+                PESectionAllocation tlsDirAlloc;
+                rdonlySect.Allocate( tlsDirAlloc, tlsDirSize, sizeof(DWORD) );
+
+                // Now write the Thread Local Storage.
+                if ( is64Bit )
+                {
+                    IMAGE_TLS_DIRECTORY64 nativeTLS;
+                    nativeTLS.StartAddressOfRawData = tlsInfo.startOfRawData;
+                    nativeTLS.EndAddressOfRawData = tlsInfo.endOfRawData;
+                    nativeTLS.AddressOfIndex = tlsInfo.addressOfIndices;
+                    nativeTLS.AddressOfCallBacks = tlsInfo.addressOfCallbacks;
+                    nativeTLS.SizeOfZeroFill = tlsInfo.sizeOfZeroFill;
+                    nativeTLS.Characteristics = tlsInfo.characteristics;
+
+                    tlsDirAlloc.WriteToSection( &nativeTLS, sizeof(nativeTLS) );
+                }
+                else
+                {
+                    IMAGE_TLS_DIRECTORY32 nativeTLS;
+                    nativeTLS.StartAddressOfRawData = (DWORD)tlsInfo.startOfRawData;
+                    nativeTLS.EndAddressOfRawData = (DWORD)tlsInfo.endOfRawData;
+                    nativeTLS.AddressOfIndex = (DWORD)tlsInfo.addressOfIndices;
+                    nativeTLS.AddressOfCallBacks = (DWORD)tlsInfo.addressOfCallbacks;
+                    nativeTLS.SizeOfZeroFill = tlsInfo.sizeOfZeroFill;
+                    nativeTLS.Characteristics = tlsInfo.characteristics;
+
+                    tlsDirAlloc.WriteToSection( &nativeTLS, sizeof(nativeTLS) );
+                }
+
+                // Remember the valid object.
+                tlsInfo.allocEntry = std::move( tlsDirAlloc );
+            }
+
+            // * LOAD CONFIG.
+            PELoadConfig& loadConfig = this->loadConfig;
+
+            if ( loadConfig.isNeeded )
+            {
+                // Detemine the size of the load configuration directory.
+                size_t lcfgDirSize;
+
+                if ( is64Bit )
+                {
+                    lcfgDirSize = sizeof(IMAGE_LOAD_CONFIG_DIRECTORY64);
+                }
+                else
+                {
+                    lcfgDirSize = sizeof(IMAGE_LOAD_CONFIG_DIRECTORY32);
+                }
+
+                PESectionAllocation lcfgDirAlloc;
+                rdonlySect.Allocate( lcfgDirAlloc, lcfgDirSize, sizeof(DWORD) );
+
+                // Write the load configuration directory.
+                if ( is64Bit )
+                {
+                    IMAGE_LOAD_CONFIG_DIRECTORY64 nativeConfig;
+                    nativeConfig.Size = sizeof(nativeConfig);
+                    nativeConfig.TimeDateStamp = loadConfig.timeDateStamp;
+                    nativeConfig.MajorVersion = loadConfig.majorVersion;
+                    nativeConfig.MinorVersion = loadConfig.minorVersion;
+                    nativeConfig.GlobalFlagsClear = loadConfig.globFlagsClear;
+                    nativeConfig.GlobalFlagsSet = loadConfig.globFlagsSet;
+                    nativeConfig.CriticalSectionDefaultTimeout = loadConfig.critSecDefTimeOut;
+                    nativeConfig.DeCommitFreeBlockThreshold = loadConfig.deCommitFreeBlockThreshold;
+                    nativeConfig.DeCommitTotalFreeThreshold = loadConfig.deCommitTotalFreeThreshold;
+                    nativeConfig.LockPrefixTable = loadConfig.lockPrefixTable;
+                    nativeConfig.MaximumAllocationSize = loadConfig.maxAllocSize;
+                    nativeConfig.VirtualMemoryThreshold = loadConfig.virtualMemoryThreshold;
+                    nativeConfig.ProcessAffinityMask = loadConfig.processAffinityMask;
+                    nativeConfig.ProcessHeapFlags = loadConfig.processHeapFlags;
+                    nativeConfig.CSDVersion = loadConfig.CSDVersion;
+                    nativeConfig.Reserved1 = loadConfig.reserved1;
+                    nativeConfig.EditList = loadConfig.editList;
+                    nativeConfig.SecurityCookie = loadConfig.securityCookie;
+                    nativeConfig.SEHandlerTable = loadConfig.SEHandlerTable;
+                    nativeConfig.SEHandlerCount = loadConfig.SEHandlerCount;
+                    nativeConfig.GuardCFCheckFunctionPointer = loadConfig.guardCFCheckFunctionPtr;
+                    nativeConfig.Reserved2 = loadConfig.reserved2;
+                    nativeConfig.GuardCFFunctionTable = loadConfig.guardCFFunctionTable;
+                    nativeConfig.GuardCFFunctionCount = loadConfig.guardCFFunctionCount;
+                    nativeConfig.GuardFlags = loadConfig.guardFlags;
+
+                    // Write it.
+                    lcfgDirAlloc.WriteToSection( &nativeConfig, sizeof(nativeConfig) );
+                }
+                else
+                {
+                    IMAGE_LOAD_CONFIG_DIRECTORY32 nativeConfig;
+                    nativeConfig.Size = sizeof(nativeConfig);
+                    nativeConfig.TimeDateStamp = loadConfig.timeDateStamp;
+                    nativeConfig.MajorVersion = loadConfig.majorVersion;
+                    nativeConfig.MinorVersion = loadConfig.minorVersion;
+                    nativeConfig.GlobalFlagsClear = loadConfig.globFlagsClear;
+                    nativeConfig.GlobalFlagsSet = loadConfig.globFlagsSet;
+                    nativeConfig.CriticalSectionDefaultTimeout = loadConfig.critSecDefTimeOut;
+                    nativeConfig.DeCommitFreeBlockThreshold = (DWORD)loadConfig.deCommitFreeBlockThreshold;
+                    nativeConfig.DeCommitTotalFreeThreshold = (DWORD)loadConfig.deCommitTotalFreeThreshold;
+                    nativeConfig.LockPrefixTable = (DWORD)loadConfig.lockPrefixTable;
+                    nativeConfig.MaximumAllocationSize = (DWORD)loadConfig.maxAllocSize;
+                    nativeConfig.VirtualMemoryThreshold = (DWORD)loadConfig.virtualMemoryThreshold;
+                    nativeConfig.ProcessHeapFlags = loadConfig.processHeapFlags;
+                    nativeConfig.ProcessAffinityMask = (DWORD)loadConfig.processAffinityMask;
+                    nativeConfig.CSDVersion = loadConfig.CSDVersion;
+                    nativeConfig.Reserved1 = loadConfig.reserved1;
+                    nativeConfig.EditList = (DWORD)loadConfig.editList;
+                    nativeConfig.SecurityCookie = (DWORD)loadConfig.securityCookie;
+                    nativeConfig.SEHandlerTable = (DWORD)loadConfig.SEHandlerTable;
+                    nativeConfig.SEHandlerCount = (DWORD)loadConfig.SEHandlerCount;
+                    nativeConfig.GuardCFCheckFunctionPointer = (DWORD)loadConfig.guardCFCheckFunctionPtr;
+                    nativeConfig.Reserved2 = (DWORD)loadConfig.reserved2;
+                    nativeConfig.GuardCFFunctionTable = (DWORD)loadConfig.guardCFFunctionTable;
+                    nativeConfig.GuardCFFunctionCount = (DWORD)loadConfig.guardCFFunctionCount;
+                    nativeConfig.GuardFlags = loadConfig.guardFlags;
+
+                    // Write it.
+                    lcfgDirAlloc.WriteToSection( &nativeConfig, sizeof(nativeConfig) );
+                }
+
+                // Remember the valid object.
+                loadConfig.allocEntry = std::move( lcfgDirAlloc );
+            }
+
+            // TODO: * BOUND IMPORT DIR.
+
+            // nothing to do for IAT.
+            // it is maintained by compilers.
+
+            // * DELAY LOAD IMPORTS.
+            //TODO.
+
             // * BASE RELOC.
+            // Has to be written last because commit-phase may create new relocations!
             const auto& baseRelocs = this->baseRelocs;
 
             size_t numBaseRelocations = baseRelocs.size();
 
             if ( numBaseRelocations != 0 )
             {
+                // We first calculate how big a directory we need.
+                std::uint32_t baseRelocDirSize = 0;
 
+                for ( size_t n = 0; n < numBaseRelocations; n++ )
+                {
+                    const PEBaseReloc& relocInfo = baseRelocs[ n ];
+
+                    std::uint32_t numEntries = (std::uint32_t)relocInfo.items.size();
+
+                    // This is the header, and the same-sized reloc entries.
+                    std::uint32_t chunkSize = sizeof(IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
+
+                    baseRelocDirSize += chunkSize;
+                }
+
+                PESectionAllocation baseRelocAlloc;
+                rdonlySect.Allocate( baseRelocAlloc, baseRelocDirSize, sizeof(DWORD) );
+
+                // TODO: maybe we want to ensure sorting by address?
+
+                std::uint32_t curWriteOff = 0;
+
+                for ( size_t n = 0; n < numBaseRelocations; n++ )
+                {
+                    const PEBaseReloc& relocInfo = baseRelocs[ n ];
+
+                    std::uint32_t numEntries = relocInfo.items.size();
+
+                    // Calculate the size of this block.
+                    // We kind of did above already.
+                    std::uint32_t chunkSize = sizeof(IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
+
+                    // Write header.
+                    {
+                        IMAGE_BASE_RELOCATION nativeRelocInfo;
+                        nativeRelocInfo.VirtualAddress = relocInfo.offsetOfReloc;
+                        nativeRelocInfo.SizeOfBlock = chunkSize;
+
+                        baseRelocAlloc.WriteToSection( &nativeRelocInfo, sizeof(nativeRelocInfo), curWriteOff );
+
+                        curWriteOff += sizeof(nativeRelocInfo);
+                    }
+
+                    // Write all reloc items now.
+                    for ( size_t n = 0; n < numEntries; n++ )
+                    {
+                        const PEBaseReloc::item& rebaseEntry = relocInfo.items[ n ];
+
+                        PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM nativeEntry;
+                        nativeEntry.type = rebaseEntry.type;
+                        nativeEntry.offset = rebaseEntry.offset;
+
+                        baseRelocAlloc.WriteToSection( &nativeEntry, sizeof(nativeEntry), curWriteOff );
+
+                        curWriteOff += sizeof(nativeEntry);
+                    }
+                }
+
+                // Remember it.
+                this->baseRelocAllocEntry = std::move( baseRelocAlloc );
             }
         }
 
@@ -1028,16 +1293,10 @@ void PEFile::WriteToStream( CFile *peStream )
         dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_RESOURCE ], this->resAllocEntry );
         dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_EXCEPTION ], this->exceptAllocEntry );
         
-        // Security.
-        {
-            IMAGE_DATA_DIRECTORY& secDataDir = peDataDirs[ IMAGE_DIRECTORY_ENTRY_SECURITY ];
-
-            secDataDir.VirtualAddress = this->security.secDataOffset;
-            secDataDir.Size = this->security.secDataSize;
-        }
+        // Attribute certificate table needs to be written after the sections!
 
         dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_BASERELOC ], this->baseRelocAllocEntry );
-        dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_DEBUG ], this->debugInfo.allocEntry );
+        dirRegHelper( peDataDirs[ IMAGE_DIRECTORY_ENTRY_DEBUG ], this->debugDescsAlloc );
         
         // Architecture.
         {
@@ -1142,10 +1401,10 @@ void PEFile::WriteToStream( CFile *peStream )
         pe_data.FileHeader.Machine = this->pe_finfo.machine_id;
         pe_data.FileHeader.NumberOfSections = (WORD)this->sections.numSections;
         pe_data.FileHeader.TimeDateStamp = this->pe_finfo.timeDateStamp;
-        pe_data.FileHeader.PointerToSymbolTable = NULL;     // not supported yet.
+        pe_data.FileHeader.PointerToSymbolTable = 0;        // not supported yet.
         pe_data.FileHeader.NumberOfSymbols = 0;
         pe_data.FileHeader.SizeOfOptionalHeader = ( is64Bit ? sizeof(IMAGE_OPTIONAL_HEADER64) : sizeof(IMAGE_OPTIONAL_HEADER32) );
-            
+        
         // Set up the flags.
         pe_data.FileHeader.Characteristics = GetPENativeFileFlags();
 
@@ -1163,8 +1422,11 @@ void PEFile::WriteToStream( CFile *peStream )
 
         std::uint32_t sectionAlignment = this->sections.GetSectionAlignment();
 
-        // Allocate section data.
-        std::vector <IMAGE_SECTION_HEADER> sect_headers;
+        // Remember file-space allocation data of every section.
+        // We will (probably) need it for the debug 'special citizen'.
+        sect_allocMap_t sect_allocMap;
+
+        // Allocate and write section data.
         {
             DWORD sectIndex = 0;
 
@@ -1176,9 +1438,19 @@ void PEFile::WriteToStream( CFile *peStream )
 
                 DWORD sectOffset = allocMan.AllocateAny( rawDataSize, this->peOptHeader.fileAlignment );
 
+                // Remember meta-data about the allocation.
+                std::uint32_t sectVirtAddr = item->GetVirtualAddress();
+                {
+                    sect_allocInfo allocInfo;
+                    allocInfo.alloc_off = sectOffset;
+
+                    // For the storage we assume that the virtual address cannot change here.
+                    sect_allocMap.insert( std::make_pair( sectVirtAddr, std::move( allocInfo ) ) );
+                }
+
                 IMAGE_SECTION_HEADER header;
                 strncpy( (char*)header.Name, item->shortName.c_str(), _countof(header.Name) );
-                header.VirtualAddress = item->GetVirtualAddress();
+                header.VirtualAddress = sectVirtAddr;
                 header.Misc.VirtualSize = allocVirtualSize;
                 header.SizeOfRawData = rawDataSize;
                 header.PointerToRawData = sectOffset;
@@ -1199,16 +1471,69 @@ void PEFile::WriteToStream( CFile *peStream )
                 // Also write the PE data.
                 PEWrite( peStream, sectOffset, rawDataSize, item->stream.Data() );
 
-                // TODO: make sure that sections are written in ascending order of their virtual addresses.
-
-                sect_headers.push_back( std::move( header ) );
-
                 sectIndex++;
             
             LIST_FOREACH_END
         }
         // Do note that the serialized section headers are ordered parallel to the section meta-data in PEFile.
         // So that the indices match for serialized and runtime data.
+
+        // Now that section info has been written we need to return to the debug 'special citizen'.
+        {
+            PESectionAllocation& debugDescsAlloc = this->debugDescsAlloc;
+
+            if ( PESection *debugDescsSection = debugDescsAlloc.GetSection() )
+            {
+                // Get the allocation info.
+                const auto& allocInfoNode = sect_allocMap.find( debugDescsSection->GetVirtualAddress() );
+
+                assert( allocInfoNode != sect_allocMap.end() );
+
+                const sect_allocInfo& sectAllocInfo = allocInfoNode->second;
+
+                // Get the written offset to the debug descriptors array.
+                std::uint32_t fileDebugArrayOff = ( sectAllocInfo.alloc_off + debugDescsAlloc.ResolveInternalOffset( 0 ) );
+
+                // Process all debug descriptors.
+                auto& debugDescs = this->debugDescs;
+
+                const size_t numDebugDescs = debugDescs.size();
+
+                for ( size_t n = 0; n < numDebugDescs; n++ )
+                {
+                    PEDebugDesc& debugEntry = debugDescs[ n ];
+
+                    // We need to establish a file pointer for debug data that is present.
+                    if ( debugEntry.dataStore.NeedsFinalizationPhase() )
+                    {
+                        // Get the offset to the written debug descriptor.
+                        std::uint32_t writtenOffset = ( fileDebugArrayOff + n * sizeof(IMAGE_DEBUG_DIRECTORY) );
+
+                        std::uint32_t fileDataOff =
+                            debugEntry.dataStore.ResolveFinalizationPhase( peStream, allocMan, sect_allocMap );
+
+                        // Write the file offset.
+                        PEWrite( peStream, writtenOffset + offsetof(IMAGE_DEBUG_DIRECTORY, PointerToRawData), sizeof(fileDataOff), &fileDataOff );
+                    }
+                }
+            }
+        }
+
+        // Write the Attribute Certificate Table.
+        {
+            IMAGE_DATA_DIRECTORY& certDataDir = peDataDirs[ IMAGE_DIRECTORY_ENTRY_SECURITY ];
+
+            std::uint32_t _rva, dataSize;
+            this->securityCookie.certStore.ResolveDataPhaseAllocation( _rva, dataSize );
+
+            // We actually cannot store as RVA.
+            assert( _rva == 0 );
+
+            std::uint32_t filePtr = this->securityCookie.certStore.ResolveFinalizationPhase( peStream, allocMan, sect_allocMap );
+
+            certDataDir.VirtualAddress = filePtr;
+            certDataDir.Size = dataSize;
+        }
 
         // Calculate the required image size in memory.
         // Since sections are address sorted, this is pretty easy.

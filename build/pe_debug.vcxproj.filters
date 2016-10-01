@@ -28,6 +28,7 @@
     <ClInclude Include="..\shared\debugsdk\dbgheap.h">
       <Filter>debugsdk</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\peloader.common.h" />
   </ItemGroup>
   <ItemGroup>
     <Natvis Include="peloader.natvis" />

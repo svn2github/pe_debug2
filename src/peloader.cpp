@@ -732,8 +732,10 @@ bool PEFile::HasLinenumberInfo( void ) const
 bool PEFile::HasDebugInfo( void ) const
 {
     // We check if we have debug directory data.
-    if ( this->debugInfo.addrOfRawData != 0 && this->debugInfo.sizeOfData != 0 )
+    if ( this->debugDescs.size() != 0 )
+    {
         return true;
+    }
 
     return false;
 }

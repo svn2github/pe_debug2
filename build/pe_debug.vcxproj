@@ -107,6 +107,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
+      <RandomizedBaseAddress>true</RandomizedBaseAddress>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -129,6 +130,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
+      <RandomizedBaseAddress>true</RandomizedBaseAddress>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -149,6 +151,7 @@
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
+      <RandomizedBaseAddress>true</RandomizedBaseAddress>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -172,6 +175,7 @@
       <AdditionalLibraryDirectories>..\shared\FIleSystem\lib\$(Platform)\$(Configuration)\</AdditionalLibraryDirectories>
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
+      <RandomizedBaseAddress>true</RandomizedBaseAddress>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -190,6 +194,7 @@
     <ClInclude Include="..\shared\debugsdk\dbgtrace.h" />
     <ClInclude Include="..\shared\debugsdk\dbgtrace.vendor.hwbrk.hxx" />
     <ClInclude Include="..\src\config\debugsdk_config.h" />
+    <ClInclude Include="..\src\peloader.common.h" />
     <ClInclude Include="..\src\peloader.h" />
     <ClInclude Include="..\src\peloader.internal.hxx" />
     <ClInclude Include="..\src\StdInc.h" />
