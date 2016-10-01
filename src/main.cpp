@@ -1,8 +1,6 @@
 #include "StdInc.h"
 #include <memory>
 
-#include <winternl.h>
-
 #include <assert.h>
 
 #include <CFileSystem.h>

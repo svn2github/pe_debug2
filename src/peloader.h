@@ -1404,11 +1404,28 @@ public:
 
         std::uint32_t offsetOfReloc;
 
+        enum class eRelocType : std::uint16_t
+        {
+            ABSOLUTE,
+            HIGH,
+            LOW,
+            HIGHLOW,
+            HIGHADJ,
+            MACHINE_5,
+            RESERVED,
+            MACHINE_7,
+            MACHINE_8,
+            MACHINE_9,
+            DIR64
+        };
+
         struct item
         {
-            std::uint16_t type : 4;
+            eRelocType type : 4;
             std::uint16_t offset : 12;
         };
+        static_assert( sizeof(item) == sizeof(std::uint16_t), "invalid item size" );
+
         std::vector <item> items;
     };
     std::vector <PEBaseReloc> baseRelocs;
@@ -1486,6 +1503,10 @@ public:
 
             return false;
         }
+
+        // TODO: on-file the TLS uses absolute VAs to point to its data.
+        // This logic needs special handling, essentially we need to write
+        // new base relocation entries during serialization.
 
         std::uint64_t startOfRawData;
         std::uint64_t endOfRawData;

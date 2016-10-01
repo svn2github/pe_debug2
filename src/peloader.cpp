@@ -20,77 +20,77 @@ std::uint16_t PEFile::GetPENativeFileFlags( void )
     // Are relocations stripped?
     if ( this->HasRelocationInfo() == false )
     {
-        chars |= IMAGE_FILE_RELOCS_STRIPPED;
+        chars |= PEL_IMAGE_FILE_RELOCS_STRIPPED;
     }
 
     if ( this->pe_finfo.isExecutableImage )
     {
-        chars |= IMAGE_FILE_EXECUTABLE_IMAGE;
+        chars |= PEL_IMAGE_FILE_EXECUTABLE_IMAGE;
     }
 
     if ( this->HasLinenumberInfo() == false )
     {
-        chars |= IMAGE_FILE_LINE_NUMS_STRIPPED;
+        chars |= PEL_IMAGE_FILE_LINE_NUMS_STRIPPED;
     }
 
     if ( !this->pe_finfo.hasLocalSymbols )
     {
-        chars |= IMAGE_FILE_LOCAL_SYMS_STRIPPED;
+        chars |= PEL_IMAGE_FILE_LOCAL_SYMS_STRIPPED;
     }
 
     if ( this->pe_finfo.hasAggressiveTrim )
     {
-        chars |= IMAGE_FILE_AGGRESIVE_WS_TRIM;
+        chars |= PEL_IMAGE_FILE_AGGRESIVE_WS_TRIM;
     }
 
     if ( this->pe_finfo.largeAddressAware )
     {
-        chars |= IMAGE_FILE_LARGE_ADDRESS_AWARE;
+        chars |= PEL_IMAGE_FILE_LARGE_ADDRESS_AWARE;
     }
 
     if ( this->pe_finfo.bytesReversedLO )
     {
-        chars |= IMAGE_FILE_BYTES_REVERSED_LO;
+        chars |= PEL_IMAGE_FILE_BYTES_REVERSED_LO;
     }
 
     if ( this->is64Bit == false )
     {
-        chars |= IMAGE_FILE_32BIT_MACHINE;
+        chars |= PEL_IMAGE_FILE_32BIT_MACHINE;
     }
 
     if ( this->HasDebugInfo() == false )
     {
-        chars |= IMAGE_FILE_DEBUG_STRIPPED;
+        chars |= PEL_IMAGE_FILE_DEBUG_STRIPPED;
     }
 
     if ( this->pe_finfo.removableRunFromSwap )
     {
-        chars |= IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP;
+        chars |= PEL_IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP;
     }
 
     if ( this->pe_finfo.netRunFromSwap )
     {
-        chars |= IMAGE_FILE_NET_RUN_FROM_SWAP;
+        chars |= PEL_IMAGE_FILE_NET_RUN_FROM_SWAP;
     }
 
     if ( this->pe_finfo.isSystemFile )
     {
-        chars |= IMAGE_FILE_SYSTEM;
+        chars |= PEL_IMAGE_FILE_SYSTEM;
     }
 
     if ( this->pe_finfo.isDLL )
     {
-        chars |= IMAGE_FILE_DLL;
+        chars |= PEL_IMAGE_FILE_DLL;
     }
 
     if ( this->pe_finfo.upSystemOnly )
     {
-        chars |= IMAGE_FILE_UP_SYSTEM_ONLY;
+        chars |= PEL_IMAGE_FILE_UP_SYSTEM_ONLY;
     }
 
     if ( this->pe_finfo.bytesReversedHI )
     {
-        chars |= IMAGE_FILE_BYTES_REVERSED_HI;
+        chars |= PEL_IMAGE_FILE_BYTES_REVERSED_HI;
     }
 
     return chars;
@@ -102,57 +102,57 @@ std::uint16_t PEFile::GetPENativeDLLOptFlags( void )
 
     if ( this->peOptHeader.dll_supportsHighEntropy )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA;
     }
 
     if ( this->peOptHeader.dll_hasDynamicBase )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE;
     }
 
     if ( this->peOptHeader.dll_forceIntegrity )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY;
     }
 
     if ( this->peOptHeader.dll_nxCompat )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_NX_COMPAT;
     }
 
     if ( this->peOptHeader.dll_noIsolation )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_NO_ISOLATION;
     }
 
     if ( this->peOptHeader.dll_noSEH )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_NO_SEH;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_NO_SEH;
     }
 
     if ( this->peOptHeader.dll_noBind )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_NO_BIND;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_NO_BIND;
     }
 
     if ( this->peOptHeader.dll_appContainer )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_APPCONTAINER;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_APPCONTAINER;
     }
 
     if ( this->peOptHeader.dll_wdmDriver )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_WDM_DRIVER;
     }
 
     if ( this->peOptHeader.dll_guardCF )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_GUARD_CF;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_GUARD_CF;
     }
 
     if ( this->peOptHeader.dll_termServAware )
     {
-        chars |= IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
+        chars |= PEL_IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE;
     }
 
     return chars;
@@ -353,137 +353,137 @@ std::uint32_t PEFile::PESection::GetPENativeFlags( void ) const
 
     if ( this->chars.sect_hasNoPadding )
     {
-        chars |= IMAGE_SCN_TYPE_NO_PAD;
+        chars |= PEL_IMAGE_SCN_TYPE_NO_PAD;
     }
 
     if ( this->chars.sect_containsCode )
     {
-        chars |= IMAGE_SCN_CNT_CODE;
+        chars |= PEL_IMAGE_SCN_CNT_CODE;
     }
 
     if ( this->chars.sect_containsInitData )
     {
-        chars |= IMAGE_SCN_CNT_INITIALIZED_DATA;
+        chars |= PEL_IMAGE_SCN_CNT_INITIALIZED_DATA;
     }
 
     if ( this->chars.sect_containsUninitData )
     {
-        chars |= IMAGE_SCN_CNT_UNINITIALIZED_DATA;
+        chars |= PEL_IMAGE_SCN_CNT_UNINITIALIZED_DATA;
     }
 
     if ( this->chars.sect_link_other )
     {
-        chars |= IMAGE_SCN_LNK_OTHER;
+        chars |= PEL_IMAGE_SCN_LNK_OTHER;
     }
 
     if ( this->chars.sect_link_info )
     {
-        chars |= IMAGE_SCN_LNK_INFO;
+        chars |= PEL_IMAGE_SCN_LNK_INFO;
     }
 
     if ( this->chars.sect_link_remove )
     {
-        chars |= IMAGE_SCN_LNK_REMOVE;
+        chars |= PEL_IMAGE_SCN_LNK_REMOVE;
     }
 
     if ( this->chars.sect_link_comdat )
     {
-        chars |= IMAGE_SCN_LNK_COMDAT;
+        chars |= PEL_IMAGE_SCN_LNK_COMDAT;
     }
 
     if ( this->chars.sect_noDeferSpecExcepts )
     {
-        chars |= IMAGE_SCN_NO_DEFER_SPEC_EXC;
+        chars |= PEL_IMAGE_SCN_NO_DEFER_SPEC_EXC;
     }
 
     if ( this->chars.sect_gprel )
     {
-        chars |= IMAGE_SCN_GPREL;
+        chars |= PEL_IMAGE_SCN_GPREL;
     }
 
     if ( this->chars.sect_mem_farData )
     {
-        chars |= IMAGE_SCN_MEM_FARDATA;
+        chars |= PEL_IMAGE_SCN_MEM_FARDATA;
     }
 
     if ( this->chars.sect_mem_purgeable )
     {
-        chars |= IMAGE_SCN_MEM_PURGEABLE;
+        chars |= PEL_IMAGE_SCN_MEM_PURGEABLE;
     }
 
     if ( this->chars.sect_mem_16bit )
     {
-        chars |= IMAGE_SCN_MEM_16BIT;
+        chars |= PEL_IMAGE_SCN_MEM_16BIT;
     }
 
     if ( this->chars.sect_mem_locked )
     {
-        chars |= IMAGE_SCN_MEM_LOCKED;
+        chars |= PEL_IMAGE_SCN_MEM_LOCKED;
     }
 
     if ( this->chars.sect_mem_preload )
     {
-        chars |= IMAGE_SCN_MEM_PRELOAD;
+        chars |= PEL_IMAGE_SCN_MEM_PRELOAD;
     }
 
     switch( this->chars.sect_alignment )
     {
     case eAlignment::BYTES_UNSPECIFIED: break;  // unknown.
-    case eAlignment::BYTES_1:           chars |= IMAGE_SCN_ALIGN_1BYTES; break;
-    case eAlignment::BYTES_2:           chars |= IMAGE_SCN_ALIGN_2BYTES; break;
-    case eAlignment::BYTES_4:           chars |= IMAGE_SCN_ALIGN_4BYTES; break;
-    case eAlignment::BYTES_8:           chars |= IMAGE_SCN_ALIGN_8BYTES; break;
-    case eAlignment::BYTES_16:          chars |= IMAGE_SCN_ALIGN_16BYTES; break;
-    case eAlignment::BYTES_32:          chars |= IMAGE_SCN_ALIGN_32BYTES; break;
-    case eAlignment::BYTES_64:          chars |= IMAGE_SCN_ALIGN_64BYTES; break;
-    case eAlignment::BYTES_128:         chars |= IMAGE_SCN_ALIGN_128BYTES; break;
-    case eAlignment::BYTES_256:         chars |= IMAGE_SCN_ALIGN_256BYTES; break;
-    case eAlignment::BYTES_512:         chars |= IMAGE_SCN_ALIGN_512BYTES; break;
-    case eAlignment::BYTES_1024:        chars |= IMAGE_SCN_ALIGN_1024BYTES; break;
-    case eAlignment::BYTES_2048:        chars |= IMAGE_SCN_ALIGN_2048BYTES; break;
-    case eAlignment::BYTES_4096:        chars |= IMAGE_SCN_ALIGN_4096BYTES; break;
-    case eAlignment::BYTES_8192:        chars |= IMAGE_SCN_ALIGN_8192BYTES; break;
+    case eAlignment::BYTES_1:           chars |= PEL_IMAGE_SCN_ALIGN_1BYTES; break;
+    case eAlignment::BYTES_2:           chars |= PEL_IMAGE_SCN_ALIGN_2BYTES; break;
+    case eAlignment::BYTES_4:           chars |= PEL_IMAGE_SCN_ALIGN_4BYTES; break;
+    case eAlignment::BYTES_8:           chars |= PEL_IMAGE_SCN_ALIGN_8BYTES; break;
+    case eAlignment::BYTES_16:          chars |= PEL_IMAGE_SCN_ALIGN_16BYTES; break;
+    case eAlignment::BYTES_32:          chars |= PEL_IMAGE_SCN_ALIGN_32BYTES; break;
+    case eAlignment::BYTES_64:          chars |= PEL_IMAGE_SCN_ALIGN_64BYTES; break;
+    case eAlignment::BYTES_128:         chars |= PEL_IMAGE_SCN_ALIGN_128BYTES; break;
+    case eAlignment::BYTES_256:         chars |= PEL_IMAGE_SCN_ALIGN_256BYTES; break;
+    case eAlignment::BYTES_512:         chars |= PEL_IMAGE_SCN_ALIGN_512BYTES; break;
+    case eAlignment::BYTES_1024:        chars |= PEL_IMAGE_SCN_ALIGN_1024BYTES; break;
+    case eAlignment::BYTES_2048:        chars |= PEL_IMAGE_SCN_ALIGN_2048BYTES; break;
+    case eAlignment::BYTES_4096:        chars |= PEL_IMAGE_SCN_ALIGN_4096BYTES; break;
+    case eAlignment::BYTES_8192:        chars |= PEL_IMAGE_SCN_ALIGN_8192BYTES; break;
     default:                            break;  // should never happen.
     }
 
     if ( this->chars.sect_link_nreloc_ovfl )
     {
-        chars |= IMAGE_SCN_LNK_NRELOC_OVFL;
+        chars |= PEL_IMAGE_SCN_LNK_NRELOC_OVFL;
     }
 
     if ( this->chars.sect_mem_discardable )
     {
-        chars |= IMAGE_SCN_MEM_DISCARDABLE;
+        chars |= PEL_IMAGE_SCN_MEM_DISCARDABLE;
     }
 
     if ( this->chars.sect_mem_not_cached )
     {
-        chars |= IMAGE_SCN_MEM_NOT_CACHED;
+        chars |= PEL_IMAGE_SCN_MEM_NOT_CACHED;
     }
 
     if ( this->chars.sect_mem_not_paged )
     {
-        chars |= IMAGE_SCN_MEM_NOT_PAGED;
+        chars |= PEL_IMAGE_SCN_MEM_NOT_PAGED;
     }
 
     if ( this->chars.sect_mem_shared )
     {
-        chars |= IMAGE_SCN_MEM_SHARED;
+        chars |= PEL_IMAGE_SCN_MEM_SHARED;
     }
 
     if ( this->chars.sect_mem_execute )
     {
-        chars |= IMAGE_SCN_MEM_EXECUTE;
+        chars |= PEL_IMAGE_SCN_MEM_EXECUTE;
     }
 
     if ( this->chars.sect_mem_read )
     {
-        chars |= IMAGE_SCN_MEM_READ;
+        chars |= PEL_IMAGE_SCN_MEM_READ;
     }
 
     if ( this->chars.sect_mem_write )
     {
-        chars |= IMAGE_SCN_MEM_WRITE;
+        chars |= PEL_IMAGE_SCN_MEM_WRITE;
     }
 
     return chars;
@@ -497,7 +497,7 @@ void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, PESection 
 
         std::uint32_t sectSize = targetSect->stream.Size();
 
-        const size_t reqSectSize = ( patchOffset + sizeof(DWORD) );
+        const size_t reqSectSize = ( patchOffset + sizeof(std::uint32_t) );
 
         if ( sectSize < reqSectSize )
         {

@@ -1,3 +1,8 @@
+// I am (more or less) thankful of certain other people that have done research on PE loading aswell,
+// such as...
+//  http://python-pefile.sourcearchive.com/
+//  https://code.google.com/archive/p/corkami/wikis/PE.wiki
+
 // Deserialization of PE files.
 #include "StdInc.h"
 #include "peloader.h"
@@ -68,10 +73,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
     DOSStub dos;
 
     // Cache some properties.
-    LONG peFileStartOffset;
+    std::int32_t peFileStartOffset;
     {
         // It's data is expected to have no complicated things
-        IMAGE_DOS_HEADER dosHeader;
+        PEStructures::IMAGE_DOS_HEADER dosHeader;
 
         bool couldReadDOS = peStream->ReadStruct( dosHeader );
 
@@ -107,9 +112,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
         // We need the program data aswell.
         // Assumption is that the data directly follows the header and ends in the new data ptr.
         {
-            LONG newDataOffset = dosHeader.e_lfanew;
+            std::int32_t newDataOffset = dosHeader.e_lfanew;
 
-            LONG sizeOfStubData = ( newDataOffset - sizeof( dosHeader ) );
+            std::int32_t sizeOfStubData = ( newDataOffset - sizeof( dosHeader ) );
 
             assert( sizeOfStubData >= 0 );
 
@@ -133,14 +138,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
     PEFileInfo peInfo;
 
     // Cache some properties.
-    WORD numSections;
+    std::uint16_t numSections;
     {
         int seekSuccess = peStream->SeekNative( peFileStartOffset, SEEK_SET );
 
         assert( seekSuccess == 0 );
 
         // Read PE information.
-        IMAGE_PE_HEADER peHeader;
+        PEStructures::IMAGE_PE_HEADER peHeader;
 
         bool couldReadPE = peStream->ReadStruct( peHeader );
 
@@ -152,15 +157,15 @@ void PEFile::LoadFromDisk( CFile *peStream )
             throw std::exception( "invalid PE header signature" );
 
         // We only support machine types we know.
-        WORD machineType = peHeader.FileHeader.Machine;
+        std::int16_t machineType = peHeader.FileHeader.Machine;
 
         bool is64Bit;
         {
-            if ( machineType == IMAGE_FILE_MACHINE_I386 )
+            if ( machineType == PEL_IMAGE_FILE_MACHINE_I386 )
             {
                 is64Bit = false;
             }
-            else if ( machineType == IMAGE_FILE_MACHINE_AMD64 )
+            else if ( machineType == PEL_IMAGE_FILE_MACHINE_AMD64 )
             {
                 is64Bit = true;
             }
@@ -175,31 +180,31 @@ void PEFile::LoadFromDisk( CFile *peStream )
         peInfo.timeDateStamp = peHeader.FileHeader.TimeDateStamp;
     
         // Flags that matter.
-        WORD chars = peHeader.FileHeader.Characteristics;
+        std::uint16_t chars = peHeader.FileHeader.Characteristics;
 
-        peInfo.isExecutableImage = ( chars & IMAGE_FILE_EXECUTABLE_IMAGE ) != 0;
-        peInfo.hasLocalSymbols = ( chars & IMAGE_FILE_LOCAL_SYMS_STRIPPED ) == 0;
-        peInfo.hasAggressiveTrim = ( chars & IMAGE_FILE_AGGRESIVE_WS_TRIM ) != 0;
-        peInfo.largeAddressAware = ( chars & IMAGE_FILE_LARGE_ADDRESS_AWARE ) != 0;
-        peInfo.bytesReversedLO = ( chars & IMAGE_FILE_BYTES_REVERSED_LO ) != 0;
-        peInfo.removableRunFromSwap = ( chars & IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP ) != 0;
-        peInfo.netRunFromSwap = ( chars & IMAGE_FILE_NET_RUN_FROM_SWAP ) != 0;
-        peInfo.isSystemFile = ( chars & IMAGE_FILE_SYSTEM ) != 0;
-        peInfo.isDLL = ( chars & IMAGE_FILE_DLL ) != 0;
-        peInfo.upSystemOnly = ( chars & IMAGE_FILE_UP_SYSTEM_ONLY ) != 0;
-        peInfo.bytesReversedHI = ( chars & IMAGE_FILE_BYTES_REVERSED_HI ) != 0;
+        peInfo.isExecutableImage        = ( chars & PEL_IMAGE_FILE_EXECUTABLE_IMAGE ) != 0;
+        peInfo.hasLocalSymbols          = ( chars & PEL_IMAGE_FILE_LOCAL_SYMS_STRIPPED ) == 0;
+        peInfo.hasAggressiveTrim        = ( chars & PEL_IMAGE_FILE_AGGRESIVE_WS_TRIM ) != 0;
+        peInfo.largeAddressAware        = ( chars & PEL_IMAGE_FILE_LARGE_ADDRESS_AWARE ) != 0;
+        peInfo.bytesReversedLO          = ( chars & PEL_IMAGE_FILE_BYTES_REVERSED_LO ) != 0;
+        peInfo.removableRunFromSwap     = ( chars & PEL_IMAGE_FILE_REMOVABLE_RUN_FROM_SWAP ) != 0;
+        peInfo.netRunFromSwap           = ( chars & PEL_IMAGE_FILE_NET_RUN_FROM_SWAP ) != 0;
+        peInfo.isSystemFile             = ( chars & PEL_IMAGE_FILE_SYSTEM ) != 0;
+        peInfo.isDLL                    = ( chars & PEL_IMAGE_FILE_DLL ) != 0;
+        peInfo.upSystemOnly             = ( chars & PEL_IMAGE_FILE_UP_SYSTEM_ONLY ) != 0;
+        peInfo.bytesReversedHI          = ( chars & PEL_IMAGE_FILE_BYTES_REVERSED_HI ) != 0;
 
         // Other properties should be respected during parsing.
-        bool hasRelocsStripped = ( chars & IMAGE_FILE_RELOCS_STRIPPED ) != 0;
-        bool hasLineNumsStripped = ( chars & IMAGE_FILE_LINE_NUMS_STRIPPED ) != 0;
-        bool hasLocalSymsStripped = ( chars & IMAGE_FILE_LOCAL_SYMS_STRIPPED ) != 0;
-        bool hasDebugStripped = ( chars & IMAGE_FILE_DEBUG_STRIPPED ) != 0;
+        bool hasRelocsStripped          = ( chars & PEL_IMAGE_FILE_RELOCS_STRIPPED ) != 0;
+        bool hasLineNumsStripped        = ( chars & PEL_IMAGE_FILE_LINE_NUMS_STRIPPED ) != 0;
+        bool hasLocalSymsStripped       = ( chars & PEL_IMAGE_FILE_LOCAL_SYMS_STRIPPED ) != 0;
+        bool hasDebugStripped           = ( chars & PEL_IMAGE_FILE_DEBUG_STRIPPED ) != 0;
     
         // Check if the 32bit flag matches what we know.
         {
-            bool flag_is32bit = ( chars & IMAGE_FILE_32BIT_MACHINE ) != 0;
+            bool flag_is32bit = ( chars & PEL_IMAGE_FILE_32BIT_MACHINE ) != 0;
 
-            if ( flag_is32bit && is64Bit )
+            if ( flag_is32bit != !is64Bit )
             {
                 throw std::exception( "charactersitics define 32bit PE file while machine type says otherwise" );
             }
@@ -209,8 +214,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
         fsOffsetNumber_t optionalHeaderOffset = peStream->TellNative();
 
         // We should definately try reading symbol information.
-        DWORD symbolOffset = peHeader.FileHeader.PointerToSymbolTable;
-        DWORD numOfSymbols = peHeader.FileHeader.NumberOfSymbols;
+        std::uint32_t symbolOffset = peHeader.FileHeader.PointerToSymbolTable;
+        std::uint32_t numOfSymbols = peHeader.FileHeader.NumberOfSymbols;
 
         if ( symbolOffset != 0 && numOfSymbols != 0 )
         {
@@ -227,17 +232,17 @@ void PEFile::LoadFromDisk( CFile *peStream )
         numSections = peHeader.FileHeader.NumberOfSections;
 
         // Verify that we have a proper optional header size.
-        WORD optHeaderSize = peHeader.FileHeader.SizeOfOptionalHeader;
+        std::uint16_t optHeaderSize = peHeader.FileHeader.SizeOfOptionalHeader;
 
         bool hasValidOptionalHeaderSize;
 
         if ( is64Bit )
         {
-            hasValidOptionalHeaderSize = ( optHeaderSize == sizeof(IMAGE_OPTIONAL_HEADER64) );
+            hasValidOptionalHeaderSize = ( optHeaderSize == sizeof(PEStructures::IMAGE_OPTIONAL_HEADER64) );
         }
         else
         {
-            hasValidOptionalHeaderSize = ( optHeaderSize == sizeof(IMAGE_OPTIONAL_HEADER32) );
+            hasValidOptionalHeaderSize = ( optHeaderSize == sizeof(PEStructures::IMAGE_OPTIONAL_HEADER32) );
         }
 
         if ( !hasValidOptionalHeaderSize )
@@ -251,13 +256,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
     // We have to extract this.
     std::uint32_t sectionAlignment;
-    IMAGE_DATA_DIRECTORY dataDirs[IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
+    PEStructures::IMAGE_DATA_DIRECTORY dataDirs[PEL_IMAGE_NUMBEROF_DIRECTORY_ENTRIES];
     {
-        WORD dllChars;
+        std::uint16_t dllChars;
 
         if ( is64Bit )
         {
-            IMAGE_OPTIONAL_HEADER64 optHeader;
+            PEStructures::IMAGE_OPTIONAL_HEADER64 optHeader;
 
             bool readOptHeader = peStream->ReadStruct( optHeader );
 
@@ -303,16 +308,16 @@ void PEFile::LoadFromDisk( CFile *peStream )
             sectionAlignment = optHeader.SectionAlignment;
 
             // Extract the data directory information.
-            DWORD numDataDirs = optHeader.NumberOfRvaAndSizes;
+            std::uint32_t numDataDirs = optHeader.NumberOfRvaAndSizes;
 
-            if ( numDataDirs != IMAGE_NUMBEROF_DIRECTORY_ENTRIES )
+            if ( numDataDirs != PEL_IMAGE_NUMBEROF_DIRECTORY_ENTRIES )
                 throw std::exception( "invalid number of PE directory entries" );
 
             memcpy( dataDirs, optHeader.DataDirectory, sizeof( dataDirs ) );
         }
         else
         {
-            IMAGE_OPTIONAL_HEADER32 optHeader;
+            PEStructures::IMAGE_OPTIONAL_HEADER32 optHeader;
 
             bool readOptHeader = peStream->ReadStruct( optHeader );
 
@@ -358,9 +363,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             sectionAlignment = optHeader.SectionAlignment;
 
             // Extract the data directory information.
-            DWORD numDataDirs = optHeader.NumberOfRvaAndSizes;
+            std::uint32_t numDataDirs = optHeader.NumberOfRvaAndSizes;
 
-            if ( numDataDirs != IMAGE_NUMBEROF_DIRECTORY_ENTRIES )
+            if ( numDataDirs != PEL_IMAGE_NUMBEROF_DIRECTORY_ENTRIES )
                 throw std::exception( "invalid number of PE directory entries" );
 
             // Extract the data directory information.
@@ -368,17 +373,17 @@ void PEFile::LoadFromDisk( CFile *peStream )
         }
 
         // Process the DLL flags and store them sensibly.
-        peOpt.dll_supportsHighEntropy =     ( dllChars & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA ) != 0;
-        peOpt.dll_hasDynamicBase =          ( dllChars & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE ) != 0;
-        peOpt.dll_forceIntegrity =          ( dllChars & IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY ) != 0;
-        peOpt.dll_nxCompat =                ( dllChars & IMAGE_DLLCHARACTERISTICS_NX_COMPAT ) != 0;
-        peOpt.dll_noIsolation =             ( dllChars & IMAGE_DLLCHARACTERISTICS_NO_ISOLATION ) != 0;
-        peOpt.dll_noSEH =                   ( dllChars & IMAGE_DLLCHARACTERISTICS_NO_ISOLATION ) != 0;
-        peOpt.dll_noBind =                  ( dllChars & IMAGE_DLLCHARACTERISTICS_NO_BIND ) != 0;
-        peOpt.dll_appContainer =            ( dllChars & IMAGE_DLLCHARACTERISTICS_APPCONTAINER ) != 0;
-        peOpt.dll_wdmDriver =               ( dllChars & IMAGE_DLLCHARACTERISTICS_WDM_DRIVER ) != 0;
-        peOpt.dll_guardCF =                 ( dllChars & IMAGE_DLLCHARACTERISTICS_GUARD_CF ) != 0;
-        peOpt.dll_termServAware =           ( dllChars & IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE ) != 0;
+        peOpt.dll_supportsHighEntropy =     ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA ) != 0;
+        peOpt.dll_hasDynamicBase =          ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE ) != 0;
+        peOpt.dll_forceIntegrity =          ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_FORCE_INTEGRITY ) != 0;
+        peOpt.dll_nxCompat =                ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_NX_COMPAT ) != 0;
+        peOpt.dll_noIsolation =             ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_NO_ISOLATION ) != 0;
+        peOpt.dll_noSEH =                   ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_NO_ISOLATION ) != 0;
+        peOpt.dll_noBind =                  ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_NO_BIND ) != 0;
+        peOpt.dll_appContainer =            ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_APPCONTAINER ) != 0;
+        peOpt.dll_wdmDriver =               ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_WDM_DRIVER ) != 0;
+        peOpt.dll_guardCF =                 ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_GUARD_CF ) != 0;
+        peOpt.dll_termServAware =           ( dllChars & PEL_IMAGE_DLLCHARACTERISTICS_TERMINAL_SERVER_AWARE ) != 0;
     }
 
     // Should handle data sections first because data directories depend on them.
@@ -386,7 +391,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
     for ( size_t n = 0; n < numSections; n++ )
     {
-        IMAGE_SECTION_HEADER sectHeader;
+        PEStructures::IMAGE_SECTION_HEADER sectHeader;
 
         bool readSection = peStream->ReadStruct( sectHeader );
 
@@ -400,36 +405,36 @@ void PEFile::LoadFromDisk( CFile *peStream )
         section.SetPlacementInfo( sectHeader.VirtualAddress, sectHeader.Misc.VirtualSize );
         
         // Save characteristics flags.
-        DWORD schars = sectHeader.Characteristics;
+        std::uint32_t schars = sectHeader.Characteristics;
 
-        section.chars.sect_hasNoPadding = ( schars & IMAGE_SCN_TYPE_NO_PAD ) != 0;
-        section.chars.sect_containsCode = ( schars & IMAGE_SCN_CNT_CODE ) != 0;
-        section.chars.sect_containsInitData = ( schars & IMAGE_SCN_CNT_INITIALIZED_DATA ) != 0;
-        section.chars.sect_containsUninitData = ( schars & IMAGE_SCN_CNT_UNINITIALIZED_DATA ) != 0;
-        section.chars.sect_link_other = ( schars & IMAGE_SCN_LNK_OTHER ) != 0;
-        section.chars.sect_link_info = ( schars & IMAGE_SCN_LNK_INFO ) != 0;
-        section.chars.sect_link_remove = ( schars & IMAGE_SCN_LNK_REMOVE ) != 0;
-        section.chars.sect_link_comdat = ( schars & IMAGE_SCN_LNK_COMDAT ) != 0;
-        section.chars.sect_noDeferSpecExcepts = ( schars & IMAGE_SCN_NO_DEFER_SPEC_EXC ) != 0;
-        section.chars.sect_gprel = ( schars & IMAGE_SCN_GPREL ) != 0;
-        section.chars.sect_mem_farData = ( schars & IMAGE_SCN_MEM_FARDATA ) != 0;
-        section.chars.sect_mem_purgeable = ( schars & IMAGE_SCN_MEM_PURGEABLE ) != 0;
-        section.chars.sect_mem_16bit = ( schars & IMAGE_SCN_MEM_16BIT ) != 0;
-        section.chars.sect_mem_locked = ( schars & IMAGE_SCN_MEM_LOCKED ) != 0;
-        section.chars.sect_mem_preload = ( schars & IMAGE_SCN_MEM_PRELOAD ) != 0;
+        section.chars.sect_hasNoPadding             = ( schars & PEL_IMAGE_SCN_TYPE_NO_PAD ) != 0;
+        section.chars.sect_containsCode             = ( schars & PEL_IMAGE_SCN_CNT_CODE ) != 0;
+        section.chars.sect_containsInitData         = ( schars & PEL_IMAGE_SCN_CNT_INITIALIZED_DATA ) != 0;
+        section.chars.sect_containsUninitData       = ( schars & PEL_IMAGE_SCN_CNT_UNINITIALIZED_DATA ) != 0;
+        section.chars.sect_link_other               = ( schars & PEL_IMAGE_SCN_LNK_OTHER ) != 0;
+        section.chars.sect_link_info                = ( schars & PEL_IMAGE_SCN_LNK_INFO ) != 0;
+        section.chars.sect_link_remove              = ( schars & PEL_IMAGE_SCN_LNK_REMOVE ) != 0;
+        section.chars.sect_link_comdat              = ( schars & PEL_IMAGE_SCN_LNK_COMDAT ) != 0;
+        section.chars.sect_noDeferSpecExcepts       = ( schars & PEL_IMAGE_SCN_NO_DEFER_SPEC_EXC ) != 0;
+        section.chars.sect_gprel                    = ( schars & PEL_IMAGE_SCN_GPREL ) != 0;
+        section.chars.sect_mem_farData              = ( schars & PEL_IMAGE_SCN_MEM_FARDATA ) != 0;
+        section.chars.sect_mem_purgeable            = ( schars & PEL_IMAGE_SCN_MEM_PURGEABLE ) != 0;
+        section.chars.sect_mem_16bit                = ( schars & PEL_IMAGE_SCN_MEM_16BIT ) != 0;
+        section.chars.sect_mem_locked               = ( schars & PEL_IMAGE_SCN_MEM_LOCKED ) != 0;
+        section.chars.sect_mem_preload              = ( schars & PEL_IMAGE_SCN_MEM_PRELOAD ) != 0;
         
         // Parse the alignment information out of the chars.
         PESection::eAlignment alignNum = (PESection::eAlignment)( ( schars & 0x00F00000 ) >> 20 );
         section.chars.sect_alignment = alignNum;
 
-        section.chars.sect_link_nreloc_ovfl = ( schars & IMAGE_SCN_LNK_NRELOC_OVFL ) != 0;
-        section.chars.sect_mem_discardable = ( schars & IMAGE_SCN_MEM_DISCARDABLE ) != 0;
-        section.chars.sect_mem_not_cached = ( schars & IMAGE_SCN_MEM_NOT_CACHED ) != 0;
-        section.chars.sect_mem_not_paged = ( schars & IMAGE_SCN_MEM_NOT_PAGED ) != 0;
-        section.chars.sect_mem_shared = ( schars & IMAGE_SCN_MEM_SHARED ) != 0;
-        section.chars.sect_mem_execute = ( schars & IMAGE_SCN_MEM_EXECUTE ) != 0;
-        section.chars.sect_mem_read = ( schars & IMAGE_SCN_MEM_READ ) != 0;
-        section.chars.sect_mem_write = ( schars & IMAGE_SCN_MEM_WRITE ) != 0;
+        section.chars.sect_link_nreloc_ovfl         = ( schars & PEL_IMAGE_SCN_LNK_NRELOC_OVFL ) != 0;
+        section.chars.sect_mem_discardable          = ( schars & PEL_IMAGE_SCN_MEM_DISCARDABLE ) != 0;
+        section.chars.sect_mem_not_cached           = ( schars & PEL_IMAGE_SCN_MEM_NOT_CACHED ) != 0;
+        section.chars.sect_mem_not_paged            = ( schars & PEL_IMAGE_SCN_MEM_NOT_PAGED ) != 0;
+        section.chars.sect_mem_shared               = ( schars & PEL_IMAGE_SCN_MEM_SHARED ) != 0;
+        section.chars.sect_mem_execute              = ( schars & PEL_IMAGE_SCN_MEM_EXECUTE ) != 0;
+        section.chars.sect_mem_read                 = ( schars & PEL_IMAGE_SCN_MEM_READ ) != 0;
+        section.chars.sect_mem_write                = ( schars & PEL_IMAGE_SCN_MEM_WRITE ) != 0;
 
         // Read raw data.
         {
@@ -450,9 +455,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             std::vector <PERelocation> relocs;
             relocs.reserve( sectHeader.NumberOfRelocations );
 
-            for ( DWORD n = 0; n < sectHeader.NumberOfRelocations; n++ )
+            for ( std::uint32_t n = 0; n < sectHeader.NumberOfRelocations; n++ )
             {
-                IMAGE_RELOCATION relocEntry;
+                PEStructures::IMAGE_RELOCATION relocEntry;
 
                 bool readReloc = peStream->ReadStruct( relocEntry );
 
@@ -480,7 +485,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             for ( size_t n = 0; n < sectHeader.NumberOfLinenumbers; n++ )
             {
-                IMAGE_LINENUMBER lineInfo;
+                PEStructures::IMAGE_LINENUMBER lineInfo;
 
                 bool gotLinenum = peStream->ReadStruct( lineInfo );
 
@@ -520,13 +525,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * EXPORT INFORMATION.
     PEExportDir expInfo;
     {
-        const IMAGE_DATA_DIRECTORY& expDirEntry = dataDirs[ IMAGE_DIRECTORY_ENTRY_EXPORT ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& expDirEntry = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_EXPORT ];
 
         if ( expDirEntry.VirtualAddress != 0 )
         {
             PESection *expDirSect;
 
-            IMAGE_EXPORT_DIRECTORY expEntry;
+            PEStructures::IMAGE_EXPORT_DIRECTORY expEntry;
             {
                 bool gotData = sections.ReadPEData( expDirEntry.VirtualAddress, sizeof(expEntry), &expEntry, &expDirSect );
 
@@ -566,11 +571,11 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                 if ( is64Bit )
                 {
-                    tabSize = ( sizeof( ULONGLONG ) * expEntry.NumberOfFunctions );
+                    tabSize = ( sizeof(std::uint64_t) * expEntry.NumberOfFunctions );
                 }
                 else
                 {
-                    tabSize = ( sizeof( DWORD ) * expEntry.NumberOfFunctions );
+                    tabSize = ( sizeof(std::uint32_t) * expEntry.NumberOfFunctions );
                 }
                 
                 PESection *addrPtrSect;
@@ -589,19 +594,19 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                 addrPtrSect->SetPlacedMemory( expInfo.funcAddressAllocEntry, expEntry.AddressOfFunctions );
 
-                for ( DWORD n = 0; n < expEntry.NumberOfFunctions; n++ )
+                for ( std::uint32_t n = 0; n < expEntry.NumberOfFunctions; n++ )
                 {
                     PEExportDir::func fentry;
                     fentry.isNamed = false; // by default no export is named.
 
                     bool isForwarder;
                     {
-                        DWORD ptr;
+                        std::uint32_t ptr;
                         addrPtrStream.Read( &ptr, sizeof(ptr) );
 
                         // Determine if we are a forwarder or an export.
                         {
-                            typedef sliceOfData <DWORD> rvaSlice_t;
+                            typedef sliceOfData <std::uint32_t> rvaSlice_t;
 
                             rvaSlice_t requestSlice( ptr, 1 );
 
@@ -625,7 +630,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         // We store the location of the data entry, but NOTE that
                         // this behavior NEVER is an allocation!
                         {
-                            DWORD offStore;
+                            std::uint32_t offStore;
 
                             if ( isForwarder )
                             {
@@ -678,9 +683,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     addrNameOrdSect->SetPlacedMemory( expInfo.funcOrdinalsAllocEntry, expEntry.AddressOfNameOrdinals );
 
                     // Map names to functions.
-                    for ( DWORD n = 0; n < expEntry.NumberOfNames; n++ )
+                    for ( std::uint32_t n = 0; n < expEntry.NumberOfNames; n++ )
                     {
-                        WORD ordinal;
+                        std::uint16_t ordinal;
                         addrNameOrdStream.Read( &ordinal, sizeof(ordinal) );
 
                         // Get the index to map the function name to (== ordinal).
@@ -695,7 +700,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         // Get the name we should map to.
                         PESection *realNamePtrSect;
 
-                        DWORD namePtrRVA;
+                        std::uint32_t namePtrRVA;
                         addrNamesStream.Read( &namePtrRVA, sizeof(namePtrRVA) );
 
                         // Read the actual name.
@@ -739,7 +744,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * IMPORT directory.
     std::vector <PEImportDesc> impDescs;
     {
-        const IMAGE_DATA_DIRECTORY& impDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_IMPORT ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& impDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_IMPORT ];
 
         if ( impDir.VirtualAddress != 0 )
         {
@@ -755,15 +760,15 @@ void PEFile::LoadFromDisk( CFile *peStream )
             impDirSect->SetPlacedMemory( this->importsAllocEntry, impDir.VirtualAddress, impDir.Size );
 
             // Read all the descriptors.
-            const DWORD potentialNumDescriptors = ( impDir.Size / sizeof( IMAGE_IMPORT_DESCRIPTOR ) );
+            const std::uint32_t potentialNumDescriptors = ( impDir.Size / sizeof( PEStructures::IMAGE_IMPORT_DESCRIPTOR ) );
 
             impDescs.reserve( potentialNumDescriptors );
 
-            DWORD n = 0;
+            std::uint32_t n = 0;
 
             while ( n++ < potentialNumDescriptors )
             {
-                IMAGE_IMPORT_DESCRIPTOR importInfo;
+                PEStructures::IMAGE_IMPORT_DESCRIPTOR importInfo;
                 importDescsStream.Read( &importInfo, sizeof(importInfo) );
 
                 // TODO: allow secure bounded parsing of PE files, so we check for
@@ -802,18 +807,18 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     while ( true )
                     {
                         // Read the entry properly.
-                        ULONGLONG importNameRVA;
+                        std::uint64_t importNameRVA;
 
                         if ( is64Bit )
                         {
-                            ULONGLONG importNameRVA_read;
+                            std::uint64_t importNameRVA_read;
                             importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
 
                             importNameRVA = importNameRVA_read;
                         }
                         else
                         {
-                            DWORD importNameRVA_read;
+                            std::uint32_t importNameRVA_read;
                             importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
 
                             importNameRVA = importNameRVA_read;
@@ -847,16 +852,16 @@ void PEFile::LoadFromDisk( CFile *peStream )
                             PESection *importNameSect;
                             PEDataStream importNameStream;
                             {
-                                bool gotStream = sections.GetPEDataStream( (DWORD)importNameRVA, importNameStream, &importNameSect );
+                                bool gotStream = sections.GetPEDataStream( (std::uint32_t)importNameRVA, importNameStream, &importNameSect );
 
                                 if ( !gotStream )
                                     throw std::exception( "failed to read PE import function name entry" );
                             }
 
-                            importNameSect->SetPlacedMemory( funcInfo.nameAllocEntry, (DWORD)importNameRVA );
+                            importNameSect->SetPlacedMemory( funcInfo.nameAllocEntry, (std::uint32_t)importNameRVA );
 
                             // Read stuff.
-                            WORD ordinal_hint;
+                            std::uint16_t ordinal_hint;
                             importNameStream.Read( &ordinal_hint, sizeof(ordinal_hint) );
 
                             funcInfo.ordinal_hint = ordinal_hint;
@@ -900,7 +905,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * Resources.
     PEResourceDir resourceRoot = std::u16string();  // very weird assignment here, but required; call the constructor.
     {
-        const IMAGE_DATA_DIRECTORY& resDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_RESOURCE ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& resDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_RESOURCE ];
 
         if ( resDir.VirtualAddress != 0 )
         {
@@ -925,7 +930,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * Exception Information.
     std::vector <PERuntimeFunction> exceptRFs;
     {
-        const IMAGE_DATA_DIRECTORY& rtDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_EXCEPTION ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& rtDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_EXCEPTION ];
 
         if ( rtDir.VirtualAddress != 0 )
         {
@@ -944,13 +949,13 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             rtFuncsSect->SetPlacedMemory( this->exceptAllocEntry, rtDir.VirtualAddress, rtDir.Size );
 
-            const DWORD numFuncs = ( rtDir.Size / sizeof( IMAGE_RUNTIME_FUNCTION_ENTRY ) );
+            const std::uint32_t numFuncs = ( rtDir.Size / sizeof( PEStructures::IMAGE_RUNTIME_FUNCTION_ENTRY_X64 ) );
 
             exceptRFs.reserve( numFuncs );
 
             for ( size_t n = 0; n < numFuncs; n++ )
             {
-                IMAGE_RUNTIME_FUNCTION_ENTRY func;
+                PEStructures::IMAGE_RUNTIME_FUNCTION_ENTRY_X64 func;
                 rtFuncsStream.Read( &func, sizeof(func) );
 
                 // Since the runtime function entry stores RVAs, we want to remember them
@@ -999,7 +1004,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * ATTRIBUTE CERTIFICATES.
     PESecurity securityCookie;
     {
-        const IMAGE_DATA_DIRECTORY& certDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_SECURITY ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& certDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_SECURITY ];
 
         // VirtualAddress in this data directory is a file pointer.
         std::uint32_t certFilePtr = certDir.VirtualAddress;
@@ -1011,11 +1016,11 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * BASE RELOC.
     std::vector <PEBaseReloc> baseRelocs;
     {
-        const IMAGE_DATA_DIRECTORY& baserelocDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_BASERELOC ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& baserelocDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_BASERELOC ];
 
         if ( baserelocDir.VirtualAddress != 0 )
         {
-            const DWORD sizeRelocations = baserelocDir.Size;
+            const std::uint32_t sizeRelocations = baserelocDir.Size;
 
             PESection *baseRelocDescsSect;
             PEDataStream baseRelocDescsStream;
@@ -1038,37 +1043,41 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     break;
 
                 // Get current relocation.
-                IMAGE_BASE_RELOCATION baseReloc;
+                PEStructures::IMAGE_BASE_RELOCATION baseReloc;
                 baseRelocDescsStream.Read( &baseReloc, sizeof(baseReloc) );
 
                 // Store it.
                 const size_t blockSize = baseReloc.SizeOfBlock;
 
                 // Validate the blockSize.
-                if ( blockSize < sizeof(IMAGE_BASE_RELOCATION) )
+                if ( blockSize < sizeof(PEStructures::IMAGE_BASE_RELOCATION) )
                     throw std::exception( "malformed PE base relocation sub block" );
 
                 // Subtract the meta-data size.
-                const size_t entryBlockSize = ( blockSize - sizeof(IMAGE_BASE_RELOCATION) );
+                const size_t entryBlockSize = ( blockSize - sizeof(PEStructures::IMAGE_BASE_RELOCATION) );
                 {
                     PEBaseReloc info;
                     info.offsetOfReloc = baseReloc.VirtualAddress;
 
                     // Read all relocations.
-                    const DWORD numRelocItems = ( entryBlockSize / sizeof( PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM ) );
+                    const std::uint32_t numRelocItems = ( entryBlockSize / sizeof( PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM ) );
 
                     info.items.reserve( numRelocItems );
 
-                    for ( size_t n = 0; n < numRelocItems; n++ )
+                    size_t reloc_index = 0;
+
+                    while ( reloc_index < numRelocItems )
                     {
                         PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM reloc;
                         baseRelocDescsStream.Read( &reloc, sizeof(reloc) );
 
                         PEBaseReloc::item itemInfo;
-                        itemInfo.type = reloc.type;
+                        itemInfo.type = (PEBaseReloc::eRelocType)reloc.type;
                         itemInfo.offset = reloc.offset;
 
                         info.items.push_back( std::move( itemInfo ) );
+
+                        reloc_index++;
                     }
 
                     // Remember us.
@@ -1085,7 +1094,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * DEBUG.
     decltype(this->debugDescs) debugDescs;
     {
-        const IMAGE_DATA_DIRECTORY& debugDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_DEBUG ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& debugDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_DEBUG ];
 
         if ( debugDir.VirtualAddress != 0 )
         {
@@ -1098,16 +1107,16 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     throw std::exception( "invalid PE debug directory" );
             }
 
-            DWORD debugDirSize = debugDir.Size;
+            std::uint32_t debugDirSize = debugDir.Size;
 
             debugEntrySection->SetPlacedMemory( this->debugDescsAlloc, debugDir.VirtualAddress, debugDirSize );
 
             // Get the amount of debug descriptors available.
-            const DWORD numDescriptors = ( debugDirSize / sizeof(IMAGE_DEBUG_DIRECTORY) );
+            const std::uint32_t numDescriptors = ( debugDirSize / sizeof(PEStructures::IMAGE_DEBUG_DIRECTORY) );
 
             for ( size_t n = 0; n < numDescriptors; n++ )
             {
-                IMAGE_DEBUG_DIRECTORY debugEntry;
+                PEStructures::IMAGE_DEBUG_DIRECTORY debugEntry;
                 debugEntryStream.Read( &debugEntry, sizeof(debugEntry) );
 
                 // We store this debug information entry.
@@ -1140,7 +1149,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * GLOBAL PTR.
     PEGlobalPtr globalPtr;
     {
-        const IMAGE_DATA_DIRECTORY& globptrData = dataDirs[ IMAGE_DIRECTORY_ENTRY_GLOBALPTR ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& globptrData = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_GLOBALPTR ];
 
         globalPtr.ptrOffset = globptrData.VirtualAddress;
     }
@@ -1148,7 +1157,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * THREAD LOCAL STORAGE.
     PEThreadLocalStorage tlsInfo;
     {
-        const IMAGE_DATA_DIRECTORY& tlsDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_TLS ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& tlsDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_TLS ];
 
         if ( tlsDataDir.VirtualAddress != 0 )
         {
@@ -1166,7 +1175,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
             // It depends on the architecture what directory type we encounter here.
             if ( is64Bit )
             {
-                IMAGE_TLS_DIRECTORY64 tlsDir;
+                PEStructures::IMAGE_TLS_DIRECTORY64 tlsDir;
                 tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
                 tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
@@ -1178,7 +1187,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
             }
             else
             {
-                IMAGE_TLS_DIRECTORY32 tlsDir;
+                PEStructures::IMAGE_TLS_DIRECTORY32 tlsDir;
                 tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
                 tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
@@ -1196,7 +1205,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * LOAD CONFIG.
     PELoadConfig loadConfig;
     {
-        const IMAGE_DATA_DIRECTORY& lcfgDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& lcfgDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG ];
 
         if ( lcfgDataDir.VirtualAddress != 0 )
         {
@@ -1213,7 +1222,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             if ( is64Bit )
             {
-                IMAGE_LOAD_CONFIG_DIRECTORY64 lcfgDir;
+                PEStructures::IMAGE_LOAD_CONFIG_DIRECTORY64 lcfgDir;
                 lcfgDirStream.Read( &lcfgDir, sizeof(lcfgDir) );
 
                 if ( lcfgDir.Size < sizeof(lcfgDir) )
@@ -1246,7 +1255,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
             }
             else
             {
-                IMAGE_LOAD_CONFIG_DIRECTORY32 lcfgDir;
+                PEStructures::IMAGE_LOAD_CONFIG_DIRECTORY32 lcfgDir;
                 lcfgDirStream.Read( &lcfgDir, sizeof(lcfgDir) );
 
                 if ( lcfgDir.Size < sizeof(lcfgDir) )
@@ -1288,14 +1297,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * BOUND IMPORT DIR.
     std::vector <PEBoundImports> boundImports;
     {
-        const IMAGE_DATA_DIRECTORY& boundDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& boundDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_BOUND_IMPORT ];
 
         if ( boundDataDir.VirtualAddress != 0 )
         {
 #if 0
-            const DWORD numDescs = ( boundDataDir.Size / sizeof( DWORD ) );
+            const std::uint32_t numDescs = ( boundDataDir.Size / sizeof(std::uint32_t) );
 
-            const DWORD *boundImportDescsOffsets = (const DWORD*)GetPEDataPointer( boundDataDir.VirtualAddress, boundDataDir.Size );
+            const std::uint32_t *boundImportDescsOffsets = (const std::uint32_t*)GetPEDataPointer( boundDataDir.VirtualAddress, boundDataDir.Size );
 
             if ( !boundImportDescsOffsets )
                 throw std::exception( "invalid PE bound imports directory" );
@@ -1303,7 +1312,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
             // Read all bound import descriptors.
             for ( size_t n = 0; n < numDescs; n++ )
             {
-                DWORD boundImportDescOffset = boundImportDescsOffsets[ n ];
+                std::uint32_t boundImportDescOffset = boundImportDescsOffsets[ n ];
 
                 if ( boundImportDescOffset == NULL )
                     continue;
@@ -1365,7 +1374,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // All thunks have to be contiguously allocated inside of this directory.
     PEThunkIATStore thunkIAT;
     {
-        const IMAGE_DATA_DIRECTORY& iatDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_IAT ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& iatDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_IAT ];
 
         thunkIAT.thunkDataStart = iatDataDir.VirtualAddress;
         thunkIAT.thunkDataSize = iatDataDir.Size;
@@ -1374,7 +1383,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * DELAY LOAD IMPORTS.
     std::vector <PEDelayLoadDesc> delayLoads;
     {
-        const IMAGE_DATA_DIRECTORY& delayDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& delayDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT ];
 
         if ( delayDataDir.VirtualAddress != 0 )
         {
@@ -1389,7 +1398,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
             delayLoadDescsSect->SetPlacedMemory( this->delayLoadsAllocEntry, delayDataDir.VirtualAddress, delayDataDir.Size );
 
-            const DWORD numDelayLoads = ( delayDataDir.Size / sizeof(IMAGE_DELAYLOAD_DESCRIPTOR) );
+            const std::uint32_t numDelayLoads = ( delayDataDir.Size / sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR) );
 
             delayLoads.reserve( numDelayLoads );
 
@@ -1397,9 +1406,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             for ( size_t n = 0; n < numDelayLoads; n++ )
             {
                 // Seek to this descriptor.
-                delayLoadDescsStream.Seek( n * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR) );
+                delayLoadDescsStream.Seek( n * sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR) );
 
-                IMAGE_DELAYLOAD_DESCRIPTOR delayLoad;
+                PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR delayLoad;
                 delayLoadDescsStream.Read( &delayLoad, sizeof(delayLoad) );
 
                 PEDelayLoadDesc desc;
@@ -1435,7 +1444,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // * COMMON LANGUAGE RUNTIME INFO.
     PECommonLanguageRuntimeInfo clrInfo;
     {
-        const IMAGE_DATA_DIRECTORY& clrDataDir = dataDirs[ IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR ];
+        const PEStructures::IMAGE_DATA_DIRECTORY& clrDataDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR ];
 
         clrInfo.dataOffset = clrDataDir.VirtualAddress;
         clrInfo.dataSize = clrDataDir.Size;
