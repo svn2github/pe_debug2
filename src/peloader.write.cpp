@@ -76,6 +76,15 @@ inline decltype( auto ) FindMapValue( mapType& map, const keyType& key )
     return &foundIter->second;
 }
 
+template <typename numberType>
+static AINLINE numberType RVA2VA( std::uint32_t rva, std::uint64_t imageBase )
+{
+    if ( rva == 0 )
+        return 0;
+
+    return (numberType)( rva + imageBase );
+}
+
 namespace ResourceTools
 {
 
@@ -210,6 +219,9 @@ bool PEFile::PEFileSpaceData::NeedsFinalizationPhase( void ) const
 void PEFile::CommitDataDirectories( void )
 {
     bool is64Bit = this->is64Bit;
+
+    // We might need the image base for some operations.
+    std::uint64_t imageBase = this->peOptHeader.imageBase;
 
     // TODO: ensure that data has been properly committed to data sections which had to be.
     // First allocate a new section that should serve as allocation target.
@@ -1020,10 +1032,27 @@ void PEFile::CommitDataDirectories( void )
                 if ( is64Bit )
                 {
                     PEStructures::IMAGE_TLS_DIRECTORY64 nativeTLS;
-                    nativeTLS.StartAddressOfRawData = tlsInfo.startOfRawData;
-                    nativeTLS.EndAddressOfRawData = tlsInfo.endOfRawData;
-                    nativeTLS.AddressOfIndex = tlsInfo.addressOfIndices;
-                    nativeTLS.AddressOfCallBacks = tlsInfo.addressOfCallbacks;
+                    // We write the VAs later when we actually can resolve all.
+                    nativeTLS.StartAddressOfRawData = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), StartAddressOfRawData), tlsInfo.startOfRawDataRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
+                    nativeTLS.EndAddressOfRawData = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), EndAddressOfRawData), tlsInfo.endOfRawDataRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
+                    nativeTLS.AddressOfIndex = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), AddressOfIndex), tlsInfo.addressOfIndicesRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
+                    nativeTLS.AddressOfCallBacks = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), AddressOfCallBacks), tlsInfo.addressOfCallbacksRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
                     nativeTLS.SizeOfZeroFill = tlsInfo.sizeOfZeroFill;
                     nativeTLS.Characteristics = tlsInfo.characteristics;
 
@@ -1032,10 +1061,26 @@ void PEFile::CommitDataDirectories( void )
                 else
                 {
                     PEStructures::IMAGE_TLS_DIRECTORY32 nativeTLS;
-                    nativeTLS.StartAddressOfRawData = (std::uint32_t)tlsInfo.startOfRawData;
-                    nativeTLS.EndAddressOfRawData = (std::uint32_t)tlsInfo.endOfRawData;
-                    nativeTLS.AddressOfIndex = (std::uint32_t)tlsInfo.addressOfIndices;
-                    nativeTLS.AddressOfCallBacks = (std::uint32_t)tlsInfo.addressOfCallbacks;
+                    nativeTLS.StartAddressOfRawData = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), StartAddressOfRawData), tlsInfo.startOfRawDataRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
+                    nativeTLS.EndAddressOfRawData = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), EndAddressOfRawData), tlsInfo.endOfRawDataRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
+                    nativeTLS.AddressOfIndex = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), AddressOfIndex), tlsInfo.addressOfIndicesRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
+                    nativeTLS.AddressOfCallBacks = 0;
+                    tlsDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeTLS), AddressOfCallBacks), tlsInfo.addressOfCallbacksRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
                     nativeTLS.SizeOfZeroFill = tlsInfo.sizeOfZeroFill;
                     nativeTLS.Characteristics = tlsInfo.characteristics;
 
@@ -1079,20 +1124,44 @@ void PEFile::CommitDataDirectories( void )
                     nativeConfig.CriticalSectionDefaultTimeout = loadConfig.critSecDefTimeOut;
                     nativeConfig.DeCommitFreeBlockThreshold = loadConfig.deCommitFreeBlockThreshold;
                     nativeConfig.DeCommitTotalFreeThreshold = loadConfig.deCommitTotalFreeThreshold;
-                    nativeConfig.LockPrefixTable = loadConfig.lockPrefixTable;
+                    nativeConfig.LockPrefixTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), LockPrefixTable), loadConfig.lockPrefixTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
                     nativeConfig.MaximumAllocationSize = loadConfig.maxAllocSize;
                     nativeConfig.VirtualMemoryThreshold = loadConfig.virtualMemoryThreshold;
                     nativeConfig.ProcessAffinityMask = loadConfig.processAffinityMask;
                     nativeConfig.ProcessHeapFlags = loadConfig.processHeapFlags;
                     nativeConfig.CSDVersion = loadConfig.CSDVersion;
                     nativeConfig.Reserved1 = loadConfig.reserved1;
-                    nativeConfig.EditList = loadConfig.editList;
-                    nativeConfig.SecurityCookie = loadConfig.securityCookie;
-                    nativeConfig.SEHandlerTable = loadConfig.SEHandlerTable;
+                    nativeConfig.EditList = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), EditList), loadConfig.editListRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
+                    nativeConfig.SecurityCookie = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), SecurityCookie), loadConfig.securityCookieRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
+                    nativeConfig.SEHandlerTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), SEHandlerTable), loadConfig.SEHandlerTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
                     nativeConfig.SEHandlerCount = loadConfig.SEHandlerCount;
-                    nativeConfig.GuardCFCheckFunctionPointer = loadConfig.guardCFCheckFunctionPtr;
+                    nativeConfig.GuardCFCheckFunctionPointer = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), GuardCFCheckFunctionPointer), loadConfig.guardCFCheckFunctionPtrRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
                     nativeConfig.Reserved2 = loadConfig.reserved2;
-                    nativeConfig.GuardCFFunctionTable = loadConfig.guardCFFunctionTable;
+                    nativeConfig.GuardCFFunctionTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), GuardCFFunctionTable), loadConfig.guardCFFunctionTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_64BIT
+                    );
                     nativeConfig.GuardCFFunctionCount = loadConfig.guardCFFunctionCount;
                     nativeConfig.GuardFlags = loadConfig.guardFlags;
 
@@ -1111,20 +1180,44 @@ void PEFile::CommitDataDirectories( void )
                     nativeConfig.CriticalSectionDefaultTimeout = loadConfig.critSecDefTimeOut;
                     nativeConfig.DeCommitFreeBlockThreshold = (std::uint32_t)loadConfig.deCommitFreeBlockThreshold;
                     nativeConfig.DeCommitTotalFreeThreshold = (std::uint32_t)loadConfig.deCommitTotalFreeThreshold;
-                    nativeConfig.LockPrefixTable = (std::uint32_t)loadConfig.lockPrefixTable;
+                    nativeConfig.LockPrefixTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), LockPrefixTable), loadConfig.lockPrefixTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
                     nativeConfig.MaximumAllocationSize = (std::uint32_t)loadConfig.maxAllocSize;
                     nativeConfig.VirtualMemoryThreshold = (std::uint32_t)loadConfig.virtualMemoryThreshold;
                     nativeConfig.ProcessHeapFlags = loadConfig.processHeapFlags;
                     nativeConfig.ProcessAffinityMask = (std::uint32_t)loadConfig.processAffinityMask;
                     nativeConfig.CSDVersion = loadConfig.CSDVersion;
                     nativeConfig.Reserved1 = loadConfig.reserved1;
-                    nativeConfig.EditList = (std::uint32_t)loadConfig.editList;
-                    nativeConfig.SecurityCookie = (std::uint32_t)loadConfig.securityCookie;
-                    nativeConfig.SEHandlerTable = (std::uint32_t)loadConfig.SEHandlerTable;
+                    nativeConfig.EditList = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), EditList), loadConfig.editListRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
+                    nativeConfig.SecurityCookie = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), SecurityCookie), loadConfig.securityCookieRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
+                    nativeConfig.SEHandlerTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), SEHandlerTable), loadConfig.SEHandlerTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
                     nativeConfig.SEHandlerCount = (std::uint32_t)loadConfig.SEHandlerCount;
-                    nativeConfig.GuardCFCheckFunctionPointer = (std::uint32_t)loadConfig.guardCFCheckFunctionPtr;
+                    nativeConfig.GuardCFCheckFunctionPointer = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), GuardCFCheckFunctionPointer), loadConfig.guardCFCheckFunctionPtrRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
                     nativeConfig.Reserved2 = (std::uint32_t)loadConfig.reserved2;
-                    nativeConfig.GuardCFFunctionTable = (std::uint32_t)loadConfig.guardCFFunctionTable;
+                    nativeConfig.GuardCFFunctionTable = 0;
+                    lcfgDirAlloc.RegisterTargetRVA(
+                        offsetof(decltype(nativeConfig), GuardCFFunctionTable), loadConfig.guardCFFunctionTableRef, 0,
+                        PEPlacedOffset::eOffsetType::VA_32BIT
+                    );
                     nativeConfig.GuardCFFunctionCount = (std::uint32_t)loadConfig.guardCFFunctionCount;
                     nativeConfig.GuardFlags = loadConfig.guardFlags;
 
@@ -1136,83 +1229,13 @@ void PEFile::CommitDataDirectories( void )
                 loadConfig.allocEntry = std::move( lcfgDirAlloc );
             }
 
-            // TODO: * BOUND IMPORT DIR.
+            // TODO: * BOUND IMPORT DIR. (if it ever gets documented)
 
             // nothing to do for IAT.
             // it is maintained by compilers.
 
             // * DELAY LOAD IMPORTS.
             //TODO.
-
-            // * BASE RELOC.
-            // Has to be written last because commit-phase may create new relocations!
-            const auto& baseRelocs = this->baseRelocs;
-
-            size_t numBaseRelocations = baseRelocs.size();
-
-            if ( numBaseRelocations != 0 )
-            {
-                // We first calculate how big a directory we need.
-                std::uint32_t baseRelocDirSize = 0;
-
-                for ( size_t n = 0; n < numBaseRelocations; n++ )
-                {
-                    const PEBaseReloc& relocInfo = baseRelocs[ n ];
-
-                    std::uint32_t numEntries = (std::uint32_t)relocInfo.items.size();
-
-                    // This is the header, and the same-sized reloc entries.
-                    std::uint32_t chunkSize = sizeof(PEStructures::IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
-
-                    baseRelocDirSize += chunkSize;
-                }
-
-                PESectionAllocation baseRelocAlloc;
-                rdonlySect.Allocate( baseRelocAlloc, baseRelocDirSize, sizeof(std::uint32_t) );
-
-                // TODO: maybe we want to ensure sorting by address?
-
-                std::uint32_t curWriteOff = 0;
-
-                for ( size_t n = 0; n < numBaseRelocations; n++ )
-                {
-                    const PEBaseReloc& relocInfo = baseRelocs[ n ];
-
-                    std::uint32_t numEntries = relocInfo.items.size();
-
-                    // Calculate the size of this block.
-                    // We kind of did above already.
-                    std::uint32_t chunkSize = sizeof(PEStructures::IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
-
-                    // Write header.
-                    {
-                        PEStructures::IMAGE_BASE_RELOCATION nativeRelocInfo;
-                        nativeRelocInfo.VirtualAddress = relocInfo.offsetOfReloc;
-                        nativeRelocInfo.SizeOfBlock = chunkSize;
-
-                        baseRelocAlloc.WriteToSection( &nativeRelocInfo, sizeof(nativeRelocInfo), curWriteOff );
-
-                        curWriteOff += sizeof(nativeRelocInfo);
-                    }
-
-                    // Write all reloc items now.
-                    for ( size_t n = 0; n < numEntries; n++ )
-                    {
-                        const PEBaseReloc::item& rebaseEntry = relocInfo.items[ n ];
-
-                        PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM nativeEntry;
-                        nativeEntry.type = (std::uint16_t)rebaseEntry.type;
-                        nativeEntry.offset = rebaseEntry.offset;
-
-                        baseRelocAlloc.WriteToSection( &nativeEntry, sizeof(nativeEntry), curWriteOff );
-
-                        curWriteOff += sizeof(nativeEntry);
-                    }
-                }
-
-                // Remember it.
-                this->baseRelocAllocEntry = std::move( baseRelocAlloc );
-            }
         }
 
         // SECTION-ALLOC PHASE.
@@ -1241,26 +1264,97 @@ void PEFile::CommitDataDirectories( void )
 
         for ( const PESection::PEPlacedOffset& placedOff : item->placedOffsets )
         {
-            // Parameters to write RVA.
-            PESection *writeSect = item;
-            std::int32_t writeOff = placedOff.dataOffset;
-
-            // Parameters to calculate RVA.
-            PESection *targetSect = placedOff.targetSect;
-            std::uint32_t targetOff = placedOff.offsetIntoSect;
-
-            // Calculate target RVA.
-            std::uint32_t targetRVA = targetSect->ResolveRVA( targetOff );
-
-            // Write the RVA.
-            writeSect->stream.Seek( writeOff );
-            writeSect->stream.WriteUInt32( targetRVA );
+            placedOff.WriteIntoData( this, item, imageBase );
         }
 
         // Since we have committed the RVAs into binary memory, no need for the meta-data anymore.
         item->placedOffsets.clear();
 
     LIST_FOREACH_END
+
+    // For practical reasons we are writing the BASE RELOC information in its own section.
+    // Main consensus is that relocation entries are written by placed offsets and that
+    // creating another layer to abstract on that is too complicated.
+    {
+        PESection relocSect;
+        relocSect.shortName = ".relsect";
+
+        // * BASE RELOC.
+        // Has to be written last because commit-phase may create new relocations!
+        const auto& baseRelocs = this->baseRelocs;
+
+        if ( baseRelocs.empty() == false )
+        {
+            // We first calculate how big a directory we need.
+            std::uint32_t baseRelocDirSize = 0;
+
+            for ( const auto& relocNode : baseRelocs )
+            {
+                const PEBaseReloc& relocInfo = relocNode.second;
+
+                std::uint32_t numEntries = (std::uint32_t)relocInfo.items.size();
+
+                // This is the header, and the same-sized reloc entries.
+                std::uint32_t chunkSize = sizeof(PEStructures::IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
+
+                baseRelocDirSize += chunkSize;
+            }
+
+            PESectionAllocation baseRelocAlloc;
+            relocSect.Allocate( baseRelocAlloc, baseRelocDirSize, sizeof(std::uint32_t) );
+
+            // Since we are iterating a std::map container, the output is
+            // guarranteed to be sorted-by-address!
+            std::uint32_t curWriteOff = 0;
+
+            for ( const auto& relocNode : baseRelocs )
+            {
+                const PEBaseReloc& relocInfo = relocNode.second;
+
+                std::uint32_t numEntries = relocInfo.items.size();
+
+                // Calculate the size of this block.
+                // We kind of did above already.
+                std::uint32_t chunkSize = sizeof(PEStructures::IMAGE_BASE_RELOCATION) + numEntries * sizeof(PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM);
+
+                // Write header.
+                {
+                    PEStructures::IMAGE_BASE_RELOCATION nativeRelocInfo;
+                    nativeRelocInfo.VirtualAddress = relocInfo.offsetOfReloc;
+                    nativeRelocInfo.SizeOfBlock = chunkSize;
+
+                    baseRelocAlloc.WriteToSection( &nativeRelocInfo, sizeof(nativeRelocInfo), curWriteOff );
+
+                    curWriteOff += sizeof(nativeRelocInfo);
+                }
+
+                // Write all reloc items now.
+                for ( size_t n = 0; n < numEntries; n++ )
+                {
+                    const PEBaseReloc::item& rebaseEntry = relocInfo.items[ n ];
+
+                    PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM nativeEntry;
+                    nativeEntry.type = (std::uint16_t)rebaseEntry.type;
+                    nativeEntry.offset = rebaseEntry.offset;
+
+                    baseRelocAlloc.WriteToSection( &nativeEntry, sizeof(nativeEntry), curWriteOff );
+
+                    curWriteOff += sizeof(nativeEntry);
+                }
+            }
+
+            // Remember it.
+            this->baseRelocAllocEntry = std::move( baseRelocAlloc );
+        }
+
+        // Place the relocation section.
+        if ( relocSect.IsEmpty() == false )
+        {
+            relocSect.Finalize();
+
+            this->AddSection( std::move( relocSect ) );
+        }
+    }
 }
 
 void PEFile::WriteToStream( CFile *peStream )

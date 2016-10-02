@@ -15,4 +15,7 @@
       </CustomListItems>
     </Expand>
   </Type>
+  <Type Name="PEFile::PESection::PESectionDataReference">
+    <DisplayString Condition="this->theSect != 0">( {this->theSect->shortName,sb}:{this->sectOffset,x} )</DisplayString>
+  </Type>
 </AutoVisualizer>

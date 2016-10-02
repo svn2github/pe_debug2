@@ -293,14 +293,28 @@ void PEFile::PESectionAllocation::WriteToSection( const void *dataPtr, std::uint
     allocSect->stream.Write( dataPtr, dataSize );
 }
 
-void PEFile::PESectionAllocation::RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff )
+void PEFile::PESectionAllocation::RegisterTargetRVA(
+    std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff,
+    PEFile::PESection::PEPlacedOffset::eOffsetType offsetType
+)
 {
-    this->theSection->RegisterTargetRVA( this->sectOffset + patchOffset, targetSect, targetOff );
+    this->theSection->RegisterTargetRVA( this->sectOffset + patchOffset, targetSect, targetOff, offsetType );
 }
 
-void PEFile::PESectionAllocation::RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff )
+void PEFile::PESectionAllocation::RegisterTargetRVA(
+    std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff,
+    PEFile::PESection::PEPlacedOffset::eOffsetType offsetType
+)
 {
-    this->RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset + targetOff );
+    this->RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset + targetOff, offsetType );
+}
+
+void PEFile::PESectionAllocation::RegisterTargetRVA(
+    std::uint32_t patchOffset, const PESectionDataReference& targetInfo, std::uint32_t targetOff,
+    PEFile::PESection::PEPlacedOffset::eOffsetType offsetType
+)
+{
+    this->RegisterTargetRVA( patchOffset, targetInfo.theSect, targetInfo.sectOffset + targetOff, offsetType );
 }
 
 void PEFile::PESection::SetPlacedMemory( PESectionAllocation& blockMeta, std::uint32_t allocOff, std::uint32_t allocSize )
@@ -331,13 +345,81 @@ void PEFile::PESection::SetPlacedMemory( PESectionAllocation& blockMeta, std::ui
     LIST_INSERT( this->dataAllocList.root, blockMeta.sectionNode );
 }
 
-PEFile::PESection::PEPlacedOffset::PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect )
+PEFile::PESection::PEPlacedOffset::PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect, eOffsetType offType )
 {
     this->dataOffset = dataOffset;
     this->targetSect = targetSect;
     this->offsetIntoSect = offsetIntoSect;
+    this->offsetType = offType;
 
-    LIST_INSERT( targetSect->RVAreferalList.root, this->targetNode );
+    if ( targetSect )
+    {
+        LIST_INSERT( targetSect->RVAreferalList.root, this->targetNode );
+    }
+}
+
+void PEFile::PESection::PEPlacedOffset::WriteIntoData( PEFile *peImage, PESection *writeSect, std::uint64_t imageBase ) const
+{
+    // Parameters to write the offset.
+    std::int32_t writeOff = this->dataOffset;
+
+    // Parameters to calculate the offset.
+    PESection *targetSect = this->targetSect;
+    std::uint32_t targetOff = this->offsetIntoSect;
+
+    // There are several types of offsets we can write, not just RVA.
+    eOffsetType offType = this->offsetType;
+
+    if ( offType == eOffsetType::RVA )
+    {
+        // Calculate target RVA.
+        std::uint32_t targetRVA = 0;
+
+        if ( targetSect )
+        {
+            targetRVA = targetSect->ResolveRVA( targetOff );
+        }
+
+        // Write the RVA.
+        writeSect->stream.Seek( writeOff );
+        writeSect->stream.WriteUInt32( targetRVA );
+    }
+    else if ( offType == eOffsetType::VA_32BIT )
+    {
+        // Calculate the absolute VA.
+        std::uint32_t targetVA = 0;
+
+        if ( targetSect )
+        {
+            targetVA = ( (std::uint32_t)imageBase + targetSect->ResolveRVA( targetOff ) );
+        }
+
+        // Write it prematurely.
+        writeSect->stream.Seek( writeOff );
+        writeSect->stream.WriteUInt32( targetVA );
+
+        // Notify the runtime.
+        peImage->OnWriteAbsoluteVA( writeSect, writeOff, false );
+    }
+    else if ( offType == eOffsetType::VA_64BIT )
+    {
+        std::uint64_t targetVA = 0;
+
+        if ( targetSect )
+        {
+            targetVA = ( imageBase + targetSect->ResolveRVA( targetOff ) );
+        }
+
+        writeSect->stream.Seek( writeOff );
+        writeSect->stream.WriteUInt64( targetVA );
+
+        peImage->OnWriteAbsoluteVA( writeSect, writeOff, true );
+    }
+    else
+    {
+        // Should never happen.
+        assert( 0 );
+    }
 }
 
 std::uint32_t PEFile::PESection::ResolveRVA( std::uint32_t sectOffset ) const
@@ -489,13 +571,16 @@ std::uint32_t PEFile::PESection::GetPENativeFlags( void ) const
     return chars;
 }
 
-void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset )
+void PEFile::PESection::RegisterTargetRVA(
+    std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset,
+    PEPlacedOffset::eOffsetType offsetType
+)
 {
     // Make sure our section has space at that point.
     {
         assert( this->isFinal == false );
 
-        std::uint32_t sectSize = targetSect->stream.Size();
+        std::uint32_t sectSize = this->stream.Size();
 
         const size_t reqSectSize = ( patchOffset + sizeof(std::uint32_t) );
 
@@ -505,12 +590,15 @@ void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, PESection 
         }
     }
 
-    this->placedOffsets.emplace_back( patchOffset, targetSect, targetOffset );
+    this->placedOffsets.emplace_back( patchOffset, targetSect, targetOffset, offsetType );
 }
 
-void PEFile::PESection::RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo )
+void PEFile::PESection::RegisterTargetRVA(
+    std::uint32_t patchOffset, const PESectionAllocation& targetInfo,
+    PEPlacedOffset::eOffsetType offsetType
+)
 {
-    RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset );
+    RegisterTargetRVA( patchOffset, targetInfo.theSection, targetInfo.sectOffset, offsetType );
 }
 
 void PEFile::PESection::Finalize( void )
@@ -707,7 +795,7 @@ bool PEFile::HasRelocationInfo( void ) const
     
     LIST_FOREACH_END
 
-    // Check the relocation data.
+    // Check the base relocation data.
     if ( this->baseRelocs.size() != 0 )
         return true;
 

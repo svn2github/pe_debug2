@@ -67,6 +67,14 @@ void PEFile::PEFileSpaceData::ReadFromFile( CFile *peStream, const PESectionMan&
     // Having no storage is perfectly fine.
 }
 
+static AINLINE std::uint32_t VA2RVA( std::uint64_t va, std::uint64_t imageBase )
+{
+    if ( va == 0 )
+        return 0;
+
+    return (std::uint32_t)( va - imageBase );
+}
+
 void PEFile::LoadFromDisk( CFile *peStream )
 {
     // We read the DOS stub.
@@ -519,6 +527,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
     // NOTE: the DEBUG DIRECTORY probably needs to use peStream again.
 
+    // If we ever encounter an absolute VA during deserialization, we need to subtract the image base.
+    const std::uint64_t imageBase = peOpt.imageBase;
+
     // Load the directory information now.
     // We decide to create meta-data structs out of them.
     // If possible, delete the section that contains the meta-data.
@@ -834,11 +845,11 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
                         if ( is64Bit )
                         {
-                            isOrdinalImport = ( importNameRVA & 0x8000000000000000 ) != 0;
+                            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG64 ) != 0;
                         }
                         else
                         {
-                            isOrdinalImport = ( importNameRVA & 0x80000000 ) != 0;
+                            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG32 ) != 0;
                         }
 
                         if ( isOrdinalImport )
@@ -898,7 +909,6 @@ void PEFile::LoadFromDisk( CFile *peStream )
             }
 
             // Done with all imports.
-            
         }
     }
 
@@ -1014,7 +1024,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
     }
 
     // * BASE RELOC.
-    std::vector <PEBaseReloc> baseRelocs;
+    std::map <std::uint32_t, PEBaseReloc> baseRelocs;
     {
         const PEStructures::IMAGE_DATA_DIRECTORY& baserelocDir = dataDirs[ PEL_IMAGE_DIRECTORY_ENTRY_BASERELOC ];
 
@@ -1056,14 +1066,24 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 // Subtract the meta-data size.
                 const size_t entryBlockSize = ( blockSize - sizeof(PEStructures::IMAGE_BASE_RELOCATION) );
                 {
+                    std::uint32_t relVirtAddr = baseReloc.VirtualAddress;
+
+                    // Verify that it is a valid block address.
+                    if ( ( relVirtAddr % baserelocChunkSize ) != 0 )
+                    {
+                        throw std::exception( "invalid PE base relocation block virtual address (must be aligned on 4K boundaries)" );
+                    }
+
                     PEBaseReloc info;
-                    info.offsetOfReloc = baseReloc.VirtualAddress;
+                    info.offsetOfReloc = relVirtAddr;
 
                     // Read all relocations.
                     const std::uint32_t numRelocItems = ( entryBlockSize / sizeof( PEStructures::IMAGE_BASE_RELOC_TYPE_ITEM ) );
 
                     info.items.reserve( numRelocItems );
 
+                    // Base relocation are stored in a stream-like array. Some entries form tuples,
+                    // so that two entries have to be next to each other.
                     size_t reloc_index = 0;
 
                     while ( reloc_index < numRelocItems )
@@ -1072,8 +1092,8 @@ void PEFile::LoadFromDisk( CFile *peStream )
                         baseRelocDescsStream.Read( &reloc, sizeof(reloc) );
 
                         PEBaseReloc::item itemInfo;
-                        itemInfo.type = (PEBaseReloc::eRelocType)reloc.type;
                         itemInfo.offset = reloc.offset;
+                        itemInfo.type = (PEBaseReloc::eRelocType)reloc.type;
 
                         info.items.push_back( std::move( itemInfo ) );
 
@@ -1081,7 +1101,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     }
 
                     // Remember us.
-                    baseRelocs.push_back( std::move( info ) );
+                    // We take advantage of the alignedness and divide by that number.
+                    std::uint32_t baseRelocIndex = ( relVirtAddr / baserelocChunkSize );
+
+                    baseRelocs.insert( std::make_pair( baseRelocIndex, std::move( info ) ) );
                 }
 
                 // Done reading this descriptor.
@@ -1173,15 +1196,23 @@ void PEFile::LoadFromDisk( CFile *peStream )
             }
 
             // It depends on the architecture what directory type we encounter here.
+            uint32_t startOfRawDataRVA = 0;
+            uint32_t endOfRawDataRVA = 0;
+            uint32_t addressOfIndicesRVA = 0;
+            uint32_t addressOfCallbacksRVA = 0;
+
             if ( is64Bit )
             {
                 PEStructures::IMAGE_TLS_DIRECTORY64 tlsDir;
                 tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
-                tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
-                tlsInfo.endOfRawData = tlsDir.EndAddressOfRawData;
-                tlsInfo.addressOfIndices = tlsDir.AddressOfIndex;
-                tlsInfo.addressOfCallbacks = tlsDir.AddressOfCallBacks;
+                // Convert the VAs into RVAs.
+                startOfRawDataRVA = VA2RVA( tlsDir.StartAddressOfRawData, imageBase );
+                endOfRawDataRVA = VA2RVA( tlsDir.EndAddressOfRawData, imageBase );
+                addressOfIndicesRVA = VA2RVA( tlsDir.AddressOfIndex, imageBase );
+                addressOfCallbacksRVA = VA2RVA( tlsDir.AddressOfCallBacks, imageBase );
+
+                // Write some things.
                 tlsInfo.sizeOfZeroFill = tlsDir.SizeOfZeroFill;
                 tlsInfo.characteristics = tlsDir.Characteristics;
             }
@@ -1190,13 +1221,22 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 PEStructures::IMAGE_TLS_DIRECTORY32 tlsDir;
                 tlsDirStream.Read( &tlsDir, sizeof(tlsDir) );
 
-                tlsInfo.startOfRawData = tlsDir.StartAddressOfRawData;
-                tlsInfo.endOfRawData = tlsDir.EndAddressOfRawData;
-                tlsInfo.addressOfIndices = tlsDir.AddressOfIndex;
-                tlsInfo.addressOfCallbacks = tlsDir.AddressOfCallBacks;
+                // Convert the VAs into RVAs.
+                startOfRawDataRVA = VA2RVA( tlsDir.StartAddressOfRawData, imageBase );
+                endOfRawDataRVA = VA2RVA( tlsDir.EndAddressOfRawData, imageBase );
+                addressOfIndicesRVA = VA2RVA( tlsDir.AddressOfIndex, imageBase );
+                addressOfCallbacksRVA = VA2RVA( tlsDir.AddressOfCallBacks, imageBase );
+
+                // Write some things.
                 tlsInfo.sizeOfZeroFill = tlsDir.SizeOfZeroFill;
                 tlsInfo.characteristics = tlsDir.Characteristics;
             }
+
+            // Get the references.
+            tlsInfo.startOfRawDataRef = sections.ResolveRVAToRef( startOfRawDataRVA );
+            tlsInfo.endOfRawDataRef = sections.ResolveRVAToRef( endOfRawDataRVA );
+            tlsInfo.addressOfIndicesRef = sections.ResolveRVAToRef( addressOfIndicesRVA );
+            tlsInfo.addressOfCallbacksRef = sections.ResolveRVAToRef( addressOfCallbacksRVA );
 
             tlsDirSect->SetPlacedMemory( tlsInfo.allocEntry, tlsDataDir.VirtualAddress, tlsDataDir.Size );
         }
@@ -1220,6 +1260,14 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 }
             }
 
+            // RVAs need special handling.
+            std::uint32_t lockPrefixTableRVA;
+            std::uint32_t editListRVA;
+            std::uint32_t securityCookieRVA;
+            std::uint32_t SEHandlerTableRVA;
+            std::uint32_t guardCFCheckFunctionPointerRVA;
+            std::uint32_t guardCFFunctionTableRVA;
+
             if ( is64Bit )
             {
                 PEStructures::IMAGE_LOAD_CONFIG_DIRECTORY64 lcfgDir;
@@ -1236,20 +1284,20 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 loadConfig.critSecDefTimeOut = lcfgDir.CriticalSectionDefaultTimeout;
                 loadConfig.deCommitFreeBlockThreshold = lcfgDir.DeCommitFreeBlockThreshold;
                 loadConfig.deCommitTotalFreeThreshold = lcfgDir.DeCommitTotalFreeThreshold;
-                loadConfig.lockPrefixTable = lcfgDir.LockPrefixTable;
+                lockPrefixTableRVA = VA2RVA( lcfgDir.LockPrefixTable, imageBase );
                 loadConfig.maxAllocSize = lcfgDir.MaximumAllocationSize;
                 loadConfig.virtualMemoryThreshold = lcfgDir.VirtualMemoryThreshold;
                 loadConfig.processAffinityMask = lcfgDir.ProcessAffinityMask;
                 loadConfig.processHeapFlags = lcfgDir.ProcessHeapFlags;
                 loadConfig.CSDVersion = lcfgDir.CSDVersion;
                 loadConfig.reserved1 = lcfgDir.Reserved1;
-                loadConfig.editList = lcfgDir.EditList;
-                loadConfig.securityCookie = lcfgDir.SecurityCookie;
-                loadConfig.SEHandlerTable = lcfgDir.SEHandlerTable;
+                editListRVA = VA2RVA( lcfgDir.EditList, imageBase );
+                securityCookieRVA = VA2RVA( lcfgDir.SecurityCookie, imageBase );
+                SEHandlerTableRVA = VA2RVA( lcfgDir.SEHandlerTable, imageBase );
                 loadConfig.SEHandlerCount = lcfgDir.SEHandlerCount;
-                loadConfig.guardCFCheckFunctionPtr = lcfgDir.GuardCFCheckFunctionPointer;
+                guardCFCheckFunctionPointerRVA = VA2RVA( lcfgDir.GuardCFCheckFunctionPointer, imageBase );
                 loadConfig.reserved2 = lcfgDir.Reserved2;
-                loadConfig.guardCFFunctionTable = lcfgDir.GuardCFFunctionTable;
+                guardCFFunctionTableRVA = VA2RVA( lcfgDir.GuardCFFunctionTable, imageBase );
                 loadConfig.guardCFFunctionCount = lcfgDir.GuardCFFunctionCount;
                 loadConfig.guardFlags = lcfgDir.GuardFlags;
             }
@@ -1269,23 +1317,31 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 loadConfig.critSecDefTimeOut = lcfgDir.CriticalSectionDefaultTimeout;
                 loadConfig.deCommitFreeBlockThreshold = lcfgDir.DeCommitFreeBlockThreshold;
                 loadConfig.deCommitTotalFreeThreshold = lcfgDir.DeCommitTotalFreeThreshold;
-                loadConfig.lockPrefixTable = lcfgDir.LockPrefixTable;
+                lockPrefixTableRVA = VA2RVA( lcfgDir.LockPrefixTable, imageBase );
                 loadConfig.maxAllocSize = lcfgDir.MaximumAllocationSize;
                 loadConfig.virtualMemoryThreshold = lcfgDir.VirtualMemoryThreshold;
                 loadConfig.processAffinityMask = lcfgDir.ProcessAffinityMask;
                 loadConfig.processHeapFlags = lcfgDir.ProcessHeapFlags;
                 loadConfig.CSDVersion = lcfgDir.CSDVersion;
                 loadConfig.reserved1 = lcfgDir.Reserved1;
-                loadConfig.editList = lcfgDir.EditList;
-                loadConfig.securityCookie = lcfgDir.SecurityCookie;
-                loadConfig.SEHandlerTable = lcfgDir.SEHandlerTable;
+                editListRVA = VA2RVA( lcfgDir.EditList, imageBase );
+                securityCookieRVA = VA2RVA( lcfgDir.SecurityCookie, imageBase );
+                SEHandlerTableRVA = VA2RVA( lcfgDir.SEHandlerTable, imageBase );
                 loadConfig.SEHandlerCount = lcfgDir.SEHandlerCount;
-                loadConfig.guardCFCheckFunctionPtr = lcfgDir.GuardCFCheckFunctionPointer;
+                guardCFCheckFunctionPointerRVA = VA2RVA( lcfgDir.GuardCFCheckFunctionPointer, imageBase );
                 loadConfig.reserved2 = lcfgDir.Reserved2;
-                loadConfig.guardCFFunctionTable = lcfgDir.GuardCFFunctionTable;
+                guardCFFunctionTableRVA = VA2RVA( lcfgDir.GuardCFFunctionTable, imageBase );
                 loadConfig.guardCFFunctionCount = lcfgDir.GuardCFFunctionCount;
                 loadConfig.guardFlags = lcfgDir.GuardFlags;
             }
+
+            // Process the VA registrations.
+            loadConfig.lockPrefixTableRef = sections.ResolveRVAToRef( lockPrefixTableRVA );
+            loadConfig.editListRef = sections.ResolveRVAToRef( editListRVA );
+            loadConfig.securityCookieRef = sections.ResolveRVAToRef( securityCookieRVA );
+            loadConfig.SEHandlerTableRef = sections.ResolveRVAToRef( SEHandlerTableRVA );
+            loadConfig.guardCFCheckFunctionPtrRef = sections.ResolveRVAToRef( guardCFCheckFunctionPointerRVA );
+            loadConfig.guardCFFunctionTableRef = sections.ResolveRVAToRef( guardCFFunctionTableRVA );
 
             // We kinda need the load config.
             loadConfig.isNeeded = true;

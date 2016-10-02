@@ -1,6 +1,9 @@
 // Windows NT Portable Executable file loader written by The_GTA.
 // Inspired by Bas Timmer's PE loading inside of FiveM.
 
+// Target spec: Revision 10 – June 15, 2016
+// https://www.microsoft.com/en-us/download/details.aspx?id=19509
+
 #ifndef _PELOADER_CORE_
 #define _PELOADER_CORE_
 
@@ -10,6 +13,7 @@
 #include <sdk/MemoryUtils.stream.h>
 
 #include <unordered_map>
+#include <map>
 #include <set>
 
 #include "peloader.common.h"
@@ -19,8 +23,8 @@ namespace PEStructures
 
 struct IMAGE_BASE_RELOC_TYPE_ITEM
 {
-    std::uint16_t type : 4;
     std::uint16_t offset : 12;
+    std::uint16_t type : 4;
 };
 
 struct IMAGE_RESOURCE_DIRECTORY {
@@ -235,6 +239,7 @@ private:
     struct PESectionMan;
     struct PEDataStream;
 
+public:
     struct PESection
     {
         friend struct PESectionMan;
@@ -508,6 +513,75 @@ private:
             RwListEntry <PESectionDataReference> sectionNode;
         };
 
+        // We need RVA finalization patches which come in the form of virtual
+        // RVA registrations into a section. This can be used to register a VA or RVA for writing.
+        struct PEPlacedOffset
+        {
+            friend struct PESection;
+
+            enum class eOffsetType
+            {
+                RVA,
+                VA_32BIT,
+                VA_64BIT
+            };
+
+            PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect, eOffsetType offType = eOffsetType::RVA );
+
+            inline PEPlacedOffset( PEPlacedOffset&& right )
+            {
+                PESection *targetSect = right.targetSect;
+
+                this->dataOffset = right.dataOffset;
+                this->targetSect = targetSect;
+                this->offsetIntoSect = right.offsetIntoSect;
+                this->offsetType = right.offsetType;
+
+                if ( targetSect )
+                {
+                    this->targetNode.moveFrom( std::move( right.targetNode ) );
+
+                    right.targetSect = NULL;
+                }
+            }
+
+            inline PEPlacedOffset( const PEPlacedOffset& right ) = delete;
+
+            inline ~PEPlacedOffset( void )
+            {
+                if ( this->targetSect )
+                {
+                    LIST_REMOVE( this->targetNode );
+                }
+            }
+
+            inline PEPlacedOffset& operator =( PEPlacedOffset&& right )
+            {
+                this->~PEPlacedOffset();
+
+                new (this) PEPlacedOffset( std::move( right ) );
+
+                return *this;
+            }
+            inline PEPlacedOffset& operator =( const PEPlacedOffset& right ) = delete;
+
+            // Management API.
+            void WriteIntoData( PEFile *peImage, PESection *writeSect, std::uint64_t imageBase ) const;
+
+        private:
+            std::int32_t dataOffset;        // the offset into the section where the RVA has to be written.
+            PESection *targetSect;          // before getting a real RVA the section has to be allocated.
+            std::int32_t offsetIntoSect;    // we have to add this to the section placement to get real RVA.
+
+            eOffsetType offsetType;         // what kind of offset we should put
+
+            RwListEntry <PEPlacedOffset> targetNode;    // list node inside target section to keep pointer valid.
+        };
+
+        std::vector <PEPlacedOffset> placedOffsets;     // list of all RVAs that are in the data of this section.
+
+        RwList <PEPlacedOffset> RVAreferalList;     // list of all our placed RVAs that refer to this section.
+
         struct PESectionAllocation
         {
             friend struct PESection;
@@ -585,10 +659,20 @@ private:
 
             // Data-access methods for this allocation
             void WriteToSection( const void *dataPtr, std::uint32_t dataSize, std::int32_t dataOff = 0 );
-
+            
             // For allocating placed RVAs into allocated structs.
-            void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff );
-            void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff = 0 );
+            void RegisterTargetRVA(
+                std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOff,
+                PEPlacedOffset::eOffsetType offType = PEPlacedOffset::eOffsetType::RVA
+            );
+            void RegisterTargetRVA(
+                std::uint32_t patchOffset, const PESectionAllocation& targetInfo, std::uint32_t targetOff = 0,
+                PEPlacedOffset::eOffsetType offType = PEPlacedOffset::eOffsetType::RVA
+            );
+            void RegisterTargetRVA(
+                std::uint32_t patchOffset, const PESectionDataReference& targetInfo, std::uint32_t targetOff = 0,
+                PEPlacedOffset::eOffsetType offType = PEPlacedOffset::eOffsetType::RVA
+            );
 
         private:
             PESection *theSection;
@@ -654,6 +738,16 @@ private:
             PESECT_WRITEHELPER( UInt32, std::uint32_t );
             PESECT_WRITEHELPER( UInt64, std::uint64_t );
         };
+
+        // API to register RVAs for commit phase.
+        void RegisterTargetRVA(
+            std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset,
+            PEPlacedOffset::eOffsetType offsetType = PEPlacedOffset::eOffsetType::RVA
+        );
+        void RegisterTargetRVA(
+            std::uint32_t patchOffset, const PESectionAllocation& targetInfo,
+            PEPlacedOffset::eOffsetType offsetType = PEPlacedOffset::eOffsetType::RVA
+        );
 
         // General method and initialization.
         void SetPlacementInfo( std::uint32_t virtAddr, std::uint32_t virtSize );
@@ -721,63 +815,6 @@ public:
 
         memStream stream;
 
-        // We need RVA finalization patches which come in the form of virtual
-        // RVA registrations into a section.
-        struct PEPlacedOffset
-        {
-            PEPlacedOffset( std::uint32_t dataOffset, PESection *targetSect, std::uint32_t offsetIntoSect );
-
-            inline PEPlacedOffset( PEPlacedOffset&& right )
-            {
-                PESection *targetSect = right.targetSect;
-
-                this->dataOffset = right.dataOffset;
-                this->targetSect = targetSect;
-                this->offsetIntoSect = right.offsetIntoSect;
-
-                if ( targetSect )
-                {
-                    this->targetNode.moveFrom( std::move( right.targetNode ) );
-
-                    right.targetSect = NULL;
-                }
-            }
-
-            inline PEPlacedOffset( const PEPlacedOffset& right ) = delete;
-
-            inline ~PEPlacedOffset( void )
-            {
-                if ( this->targetSect )
-                {
-                    LIST_REMOVE( this->targetNode );
-                }
-            }
-
-            inline PEPlacedOffset& operator =( PEPlacedOffset&& right )
-            {
-                this->~PEPlacedOffset();
-
-                new (this) PEPlacedOffset( std::move( right ) );
-
-                return *this;
-            }
-            inline PEPlacedOffset& operator =( const PEPlacedOffset& right ) = delete;
-
-            std::int32_t dataOffset;        // the offset into the section where the RVA has to be written.
-            PESection *targetSect;          // before getting a real RVA the section has to be allocated.
-            std::int32_t offsetIntoSect;    // we have to add this to the section placement to get real RVA.
-
-            RwListEntry <PEPlacedOffset> targetNode;    // list node inside target section to keep pointer valid.
-        };
-
-        std::vector <PEPlacedOffset> placedOffsets;     // list of all RVAs that are in the data of this section.
-
-        RwList <PEPlacedOffset> RVAreferalList;     // list of all our placed RVAs that refer to this section.
-
-        // API to register RVAs for commit phase.
-        void RegisterTargetRVA( std::uint32_t patchOffset, PESection *targetSect, std::uint32_t targetOffset );
-        void RegisterTargetRVA( std::uint32_t patchOffset, const PESectionAllocation& targetInfo );
-
         // Call just before placing into image.
         void Finalize( void );
 
@@ -785,6 +822,7 @@ public:
         RwListEntry <PESection> sectionNode;
         PESectionMan *ownerImage;
     };
+    using PEPlacedOffset = PESection::PEPlacedOffset;
     using PESectionDataReference = PESection::PESectionDataReference;
     using PESectionAllocation = PESection::PESectionAllocation;
 
@@ -1043,6 +1081,27 @@ private:
 
             PEFile::ReadPEString( stream, strOut );
             return true;
+        }
+
+        // Convert RVA to section data reference.
+        inline PESectionDataReference ResolveRVAToRef( uint32_t rva )
+        {
+            if ( rva != 0 )
+            {
+                PESection *theSect;
+                std::uint32_t sectOff;
+
+                bool gotLocation = GetPEDataLocation( rva, &sectOff, &theSect );
+
+                if ( !gotLocation )
+                {
+                    throw std::exception( "invalid PE relative virtual address resolution" );
+                }
+
+                return PESectionDataReference( theSect, sectOff );
+            }
+
+            return PESectionDataReference();
         }
 
     private:
@@ -1393,6 +1452,9 @@ public:
     };
     PESecurity securityCookie;
 
+    // Base relocations are documented to be per 4K page, so let's take advantage of that.
+    static constexpr std::uint32_t baserelocChunkSize = 0x1000;
+
     struct PEBaseReloc
     {
         inline PEBaseReloc( void ) = default;
@@ -1421,14 +1483,14 @@ public:
 
         struct item
         {
-            eRelocType type : 4;
             std::uint16_t offset : 12;
+            eRelocType type : 4;
         };
         static_assert( sizeof(item) == sizeof(std::uint16_t), "invalid item size" );
 
         std::vector <item> items;
     };
-    std::vector <PEBaseReloc> baseRelocs;
+    std::map <std::uint32_t, PEBaseReloc> baseRelocs;
 
     PESectionAllocation baseRelocAllocEntry;
 
@@ -1475,10 +1537,6 @@ public:
     {
         inline PEThreadLocalStorage( void )
         {
-            this->startOfRawData = 0;
-            this->endOfRawData = 0;
-            this->addressOfIndices = 0;
-            this->addressOfCallbacks = 0;
             this->sizeOfZeroFill = 0;
             this->characteristics = 0;
         }
@@ -1491,10 +1549,10 @@ public:
 
         inline bool NeedsWriting( void ) const
         {
-            if ( this->startOfRawData != 0 ||
-                 this->endOfRawData != 0 ||
-                 this->addressOfIndices != 0 ||
-                 this->addressOfCallbacks != 0 ||
+            if ( this->startOfRawDataRef.GetRVA() != 0 ||
+                 this->endOfRawDataRef.GetRVA() != 0 ||
+                 this->addressOfIndicesRef.GetRVA() != 0 ||
+                 this->addressOfCallbacksRef.GetRVA() != 0 ||
                  this->sizeOfZeroFill != 0 ||
                  this->characteristics != 0 )
             {
@@ -1504,14 +1562,13 @@ public:
             return false;
         }
 
-        // TODO: on-file the TLS uses absolute VAs to point to its data.
-        // This logic needs special handling, essentially we need to write
-        // new base relocation entries during serialization.
+        // For maintenance reasons, we store RVAs in-memory.
+        // The serialized PE format actually expects VAs.
 
-        std::uint64_t startOfRawData;
-        std::uint64_t endOfRawData;
-        std::uint64_t addressOfIndices;
-        std::uint64_t addressOfCallbacks;
+        PESectionDataReference startOfRawDataRef;
+        PESectionDataReference endOfRawDataRef;
+        PESectionDataReference addressOfIndicesRef;
+        PESectionDataReference addressOfCallbacksRef;
         std::uint32_t sizeOfZeroFill;
         std::uint32_t characteristics;
 
@@ -1536,20 +1593,20 @@ public:
         std::uint32_t critSecDefTimeOut = 0;
         std::uint64_t deCommitFreeBlockThreshold = 0;
         std::uint64_t deCommitTotalFreeThreshold = 0;
-        std::uint64_t lockPrefixTable = 0;
+        PESectionDataReference lockPrefixTableRef;
         std::uint64_t maxAllocSize = 0;
         std::uint64_t virtualMemoryThreshold = 0;
         std::uint64_t processAffinityMask = 0;
         std::uint32_t processHeapFlags = 0;
         std::uint16_t CSDVersion = 0;
         std::uint16_t reserved1 = 0;
-        std::uint64_t editList = 0;
-        std::uint64_t securityCookie = 0;
-        std::uint64_t SEHandlerTable = 0;
+        PESectionDataReference editListRef;
+        PESectionDataReference securityCookieRef;
+        PESectionDataReference SEHandlerTableRef;
         std::uint64_t SEHandlerCount = 0;
-        std::uint64_t guardCFCheckFunctionPtr = 0;
+        PESectionDataReference guardCFCheckFunctionPtrRef;
         std::uint64_t reserved2 = 0;
-        std::uint64_t guardCFFunctionTable = 0;
+        PESectionDataReference guardCFFunctionTableRef;
         std::uint64_t guardCFFunctionCount = 0;
         std::uint32_t guardFlags = 0;
 
@@ -1756,6 +1813,12 @@ public:
 
         return curDir;
     }
+
+    // Relocation API.
+    void AddRelocation( std::uint32_t rva, PEBaseReloc::eRelocType relocType );
+    void RemoveRelocations( std::uint32_t rva, std::uint32_t regionSize );
+
+    void OnWriteAbsoluteVA( PESection *writeSect, std::uint32_t sectOff, bool is64Bit );
 
 private:
     // Helper functions to off-load the duty work from the main

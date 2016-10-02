@@ -185,6 +185,7 @@
     <ClCompile Include="..\shared\debugsdk\dbgheap.cpp" />
     <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp" />
     <ClCompile Include="..\src\main.cpp" />
+    <ClCompile Include="..\src\peloader.basereloc.cpp" />
     <ClCompile Include="..\src\peloader.cpp" />
     <ClCompile Include="..\src\peloader.read.cpp" />
     <ClCompile Include="..\src\peloader.write.cpp" />
