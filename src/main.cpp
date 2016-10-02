@@ -27,7 +27,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        const char *inputName = "pe_debug_d.exe";
+        const char *inputName = "out.exe";
 
         std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 

@@ -75,6 +75,96 @@ static AINLINE std::uint32_t VA2RVA( std::uint64_t va, std::uint64_t imageBase )
     return (std::uint32_t)( va - imageBase );
 }
 
+PEFile::PEImportDesc::functions_t PEFile::PEImportDesc::ReadPEImportFunctions( PESectionMan& sections, std::uint32_t rva, PESectionAllocation& allocEntry, bool is64Bit )
+{
+    PESection *importNameArraySect;
+    PEDataStream importNameArrayStream;
+    {
+        bool hasStream = sections.GetPEDataStream( rva, importNameArrayStream, &importNameArraySect );
+
+        if ( !hasStream )
+            throw std::exception( "failed to read PE import function name array" );
+    }
+                    
+    importNameArraySect->SetPlacedMemory( allocEntry, rva );
+
+    // The array goes on until a terminating NULL.
+    functions_t funcs;
+
+    while ( true )
+    {
+        // Read the entry properly.
+        std::uint64_t importNameRVA;
+
+        if ( is64Bit )
+        {
+            std::uint64_t importNameRVA_read;
+            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
+
+            importNameRVA = importNameRVA_read;
+        }
+        else
+        {
+            std::uint32_t importNameRVA_read;
+            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
+
+            importNameRVA = importNameRVA_read;
+        }
+
+        if ( !importNameRVA )
+            break;
+
+        PEImportDesc::importFunc funcInfo;
+
+        // Check if this is an ordinal import or a named import.
+        bool isOrdinalImport;
+
+        if ( is64Bit )
+        {
+            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG64 ) != 0;
+        }
+        else
+        {
+            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG32 ) != 0;
+        }
+
+        if ( isOrdinalImport )
+        {
+            // According to the documentation ordinals are 16bit numbers.
+
+            // The documentation says that even for PE32+ the number stays 31bit.
+            // It is really weird that this was made a 64bit number tho.
+            funcInfo.ordinal_hint = (std::uint16_t)importNameRVA;
+        }
+        else
+        {
+            PESection *importNameSect;
+            PEDataStream importNameStream;
+            {
+                bool gotStream = sections.GetPEDataStream( (std::uint32_t)importNameRVA, importNameStream, &importNameSect );
+
+                if ( !gotStream )
+                    throw std::exception( "failed to read PE import function name entry" );
+            }
+
+            importNameSect->SetPlacedMemory( funcInfo.nameAllocEntry, (std::uint32_t)importNameRVA );
+
+            // Read stuff.
+            std::uint16_t ordinal_hint;
+            importNameStream.Read( &ordinal_hint, sizeof(ordinal_hint) );
+
+            funcInfo.ordinal_hint = ordinal_hint;
+
+            ReadPEString( importNameStream, funcInfo.name );
+        }
+        funcInfo.isOrdinalImport = isOrdinalImport;
+                        
+        funcs.push_back( std::move( funcInfo ) );
+    }
+
+    return funcs;
+}
+
 void PEFile::LoadFromDisk( CFile *peStream )
 {
     // We read the DOS stub.
@@ -145,6 +235,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
     // Go on to the PE header.
     PEFileInfo peInfo;
 
+    // The loader runtime needs to know if we are PE32 or PE32+.
+    bool is64Bit;
+
     // Cache some properties.
     std::uint16_t numSections;
     {
@@ -166,8 +259,6 @@ void PEFile::LoadFromDisk( CFile *peStream )
 
         // We only support machine types we know.
         std::int16_t machineType = peHeader.FileHeader.Machine;
-
-        bool is64Bit;
         {
             if ( machineType == PEL_IMAGE_FILE_MACHINE_I386 )
             {
@@ -801,90 +892,10 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 // Get the function names (with their ordinals).
                 if ( importInfo.Characteristics != 0 )
                 {
-                    PESection *importNameArraySect;
-                    PEDataStream importNameArrayStream;
-                    {
-                        bool hasStream = sections.GetPEDataStream( importInfo.Characteristics, importNameArrayStream, &importNameArraySect );
-
-                        if ( !hasStream )
-                            throw std::exception( "failed to read PE import function name array" );
-                    }
-                    
-                    importNameArraySect->SetPlacedMemory( impDesc.impNameArrayAllocEntry, importInfo.Characteristics );
-
-                    // The array goes on until a terminating NULL.
-                    decltype( impDesc.funcs ) funcs;
-
-                    while ( true )
-                    {
-                        // Read the entry properly.
-                        std::uint64_t importNameRVA;
-
-                        if ( is64Bit )
-                        {
-                            std::uint64_t importNameRVA_read;
-                            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
-
-                            importNameRVA = importNameRVA_read;
-                        }
-                        else
-                        {
-                            std::uint32_t importNameRVA_read;
-                            importNameArrayStream.Read( &importNameRVA_read, sizeof( importNameRVA_read ) );
-
-                            importNameRVA = importNameRVA_read;
-                        }
-
-                        if ( !importNameRVA )
-                            break;
-
-                        PEImportDesc::importFunc funcInfo;
-
-                        // Check if this is an ordinal import or a named import.
-                        bool isOrdinalImport;
-
-                        if ( is64Bit )
-                        {
-                            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG64 ) != 0;
-                        }
-                        else
-                        {
-                            isOrdinalImport = ( importNameRVA & PEL_IMAGE_ORDINAL_FLAG32 ) != 0;
-                        }
-
-                        if ( isOrdinalImport )
-                        {
-                            // The documentation says that even for PE32+ the number stays 31bit.
-                            // It is really weird that this was made a 64bit number tho.
-                            funcInfo.ordinal_hint = ( importNameRVA & 0x7FFFFFFF );
-                        }
-                        else
-                        {
-                            PESection *importNameSect;
-                            PEDataStream importNameStream;
-                            {
-                                bool gotStream = sections.GetPEDataStream( (std::uint32_t)importNameRVA, importNameStream, &importNameSect );
-
-                                if ( !gotStream )
-                                    throw std::exception( "failed to read PE import function name entry" );
-                            }
-
-                            importNameSect->SetPlacedMemory( funcInfo.nameAllocEntry, (std::uint32_t)importNameRVA );
-
-                            // Read stuff.
-                            std::uint16_t ordinal_hint;
-                            importNameStream.Read( &ordinal_hint, sizeof(ordinal_hint) );
-
-                            funcInfo.ordinal_hint = ordinal_hint;
-
-                            ReadPEString( importNameStream, funcInfo.name );
-                        }
-                        funcInfo.isOrdinalImport = isOrdinalImport;
-                        
-                        funcs.push_back( std::move( funcInfo ) );
-                    }
-
-                    impDesc.funcs = std::move( funcs );
+                    impDesc.funcs =
+                        PEImportDesc::ReadPEImportFunctions(
+                            sections, importInfo.Characteristics, impDesc.impNameArrayAllocEntry, is64Bit
+                        );
                 }
 
                 // Store the DLL name we import from.
@@ -900,7 +911,7 @@ void PEFile::LoadFromDisk( CFile *peStream )
                     dllNameSect->SetPlacedMemory( impDesc.DLLName_allocEntry, importInfo.Name );
                 }
 
-                impDesc.firstThunkOffset = importInfo.FirstThunk;
+                impDesc.firstThunkRef = sections.ResolveRVAToRef( importInfo.FirstThunk );
 
                 // Store this import desc.
                 impDescs.push_back( std::move( impDesc ) );
@@ -1459,7 +1470,9 @@ void PEFile::LoadFromDisk( CFile *peStream )
             delayLoads.reserve( numDelayLoads );
 
             // Store all of the details.
-            for ( size_t n = 0; n < numDelayLoads; n++ )
+            size_t n = 0;
+
+            while ( n < numDelayLoads )
             {
                 // Seek to this descriptor.
                 delayLoadDescsStream.Seek( n * sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR) );
@@ -1467,32 +1480,56 @@ void PEFile::LoadFromDisk( CFile *peStream )
                 PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR delayLoad;
                 delayLoadDescsStream.Read( &delayLoad, sizeof(delayLoad) );
 
+                // If we found a NULL descriptor, terminate.
+                if ( delayLoad.Attributes.AllAttributes == 0 &&
+                     delayLoad.DllNameRVA == 0 &&
+                     delayLoad.ModuleHandleRVA == 0 &&
+                     delayLoad.ImportAddressTableRVA == 0 &&
+                     delayLoad.BoundImportAddressTableRVA == 0 &&
+                     delayLoad.UnloadInformationTableRVA == 0 &&
+                     delayLoad.TimeDateStamp == 0 )
+                {
+                    // Encountered terminating NULL descriptor.
+                    break;
+                }
+
                 PEDelayLoadDesc desc;
                 desc.attrib = delayLoad.Attributes.AllAttributes;
                 
                 // Read DLL name.
-                if ( delayLoad.DllNameRVA != 0 )
+                if ( std::uint32_t DllNameRVA = delayLoad.DllNameRVA )
                 {
                     PESection *dllNamePtrSect;
                     {
-                        bool gotName = sections.ReadPEString( delayLoad.DllNameRVA, desc.DLLName, &dllNamePtrSect );
+                        bool gotName = sections.ReadPEString( DllNameRVA, desc.DLLName, &dllNamePtrSect );
 
                         if ( !gotName )
                             throw std::exception( "failed to read PE delay load desc DLL name" );
                     }
 
-                    dllNamePtrSect->SetPlacedMemory( desc.DLLName_allocEntry, delayLoad.DllNameRVA );
+                    dllNamePtrSect->SetPlacedMemory( desc.DLLName_allocEntry, DllNameRVA );
                 }
 
-                desc.DLLHandleOffset = delayLoad.ModuleHandleRVA;
-                desc.IATOffset = delayLoad.ImportAddressTableRVA;
-                desc.importNameTableOffset = delayLoad.ImportNameTableRVA;
-                desc.boundImportAddrTableOffset = delayLoad.BoundImportAddressTableRVA;
-                desc.unloadInfoTableOffset = delayLoad.UnloadInformationTableRVA;
+                desc.DLLHandleRef = sections.ResolveRVAToRef( delayLoad.ModuleHandleRVA );
+                desc.IATRef = sections.ResolveRVAToRef( delayLoad.ImportAddressTableRVA );
+                
+                if ( std::uint32_t importNamesRVA = delayLoad.ImportNameTableRVA )
+                {
+                    desc.importNames =
+                        PEImportDesc::ReadPEImportFunctions(
+                            sections, importNamesRVA, desc.importNamesAllocEntry, is64Bit
+                        );
+                }
+
+                desc.boundImportAddrTableRef = sections.ResolveRVAToRef( delayLoad.BoundImportAddressTableRVA );
+                desc.unloadInfoTableRef = sections.ResolveRVAToRef( delayLoad.UnloadInformationTableRVA );
                 desc.timeDateStamp = delayLoad.TimeDateStamp;
 
                 // Store it.
                 delayLoads.push_back( std::move( desc ) );
+
+                // Advance to the next.
+                n++;
             }
         }
     }

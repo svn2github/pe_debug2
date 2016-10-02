@@ -216,6 +216,112 @@ bool PEFile::PEFileSpaceData::NeedsFinalizationPhase( void ) const
     return false;
 }
 
+PEFile::PESectionAllocation PEFile::PEImportDesc::WritePEImportFunctions( PESection& writeSect, functions_t& functionList, bool is64Bit )
+{
+    // The size of an entry depends on PE32 or PE32+.
+    size_t entrySize;
+
+    if ( is64Bit )
+    {
+        entrySize = sizeof(std::uint64_t);
+    }
+    else
+    {
+        entrySize = sizeof(std::uint32_t);
+    }
+
+    std::uint32_t numFuncs = (std::uint32_t)functionList.size();
+
+    // We need to end of the array with a zero-entry to describe the end.
+    std::uint32_t actualArrayItemCount = ( numFuncs + 1 );
+
+    PESectionAllocation impNameAllocArrayEntry;
+    writeSect.Allocate( impNameAllocArrayEntry, actualArrayItemCount * entrySize, entrySize );
+
+    for ( size_t n = 0; n < numFuncs; n++ )
+    {
+        PEImportDesc::importFunc& funcInfo = functionList[ n ];
+
+        std::uint64_t entry = 0;
+        size_t entryWriteOffset = ( entrySize * n );
+
+        if ( funcInfo.isOrdinalImport )
+        {
+            entry |= funcInfo.ordinal_hint;
+
+            if ( is64Bit )
+            {
+                entry |= PEL_IMAGE_ORDINAL_FLAG64;
+            }
+            else
+            {
+                entry |= PEL_IMAGE_ORDINAL_FLAG32;
+            }
+        }
+        else
+        {
+            // Dynamic size of the name entry, since it contains optional ordinal hint.
+            size_t funcNameWriteCount = ( funcInfo.name.size() + 1 );
+            size_t nameEntrySize = ( sizeof(std::uint16_t) + funcNameWriteCount );
+
+            // Decide if we have to write a trailing zero byte, as required by the documentation.
+            // It is required if this entry size is not a multiple of sizeof(WORD).
+            bool requiresTrailZeroByte = false;
+
+            if ( ( nameEntrySize % sizeof(std::uint16_t) ) != 0 )
+            {
+                requiresTrailZeroByte = true;
+
+                nameEntrySize++;
+            }
+
+            PESectionAllocation nameAllocEntry;
+            writeSect.Allocate( nameAllocEntry, nameEntrySize, sizeof(std::uint16_t) );
+
+            // Ordinal hint.
+            nameAllocEntry.WriteToSection( &funcInfo.ordinal_hint, sizeof(funcInfo.ordinal_hint), 0 );
+
+            // Actual name.
+            nameAllocEntry.WriteToSection( funcInfo.name.c_str(), funcNameWriteCount, sizeof(std::uint16_t) );
+
+            if ( requiresTrailZeroByte )
+            {
+                nameAllocEntry.WriteUInt8( 0, sizeof(std::uint16_t) + funcNameWriteCount );
+            }
+
+            // Because the PE format does not set the flag when it writes a RVA, we
+            // can use our delayed RVA writer routine without modifications.
+            impNameAllocArrayEntry.RegisterTargetRVA( entryWriteOffset, nameAllocEntry );
+
+            funcInfo.nameAllocEntry = std::move( nameAllocEntry );
+        }
+
+        // Write the item.
+        if ( is64Bit )
+        {
+            impNameAllocArrayEntry.WriteUInt32( (std::uint32_t)entry, entryWriteOffset );
+        }
+        else
+        {
+            impNameAllocArrayEntry.WriteUInt64( entry, entryWriteOffset );
+        }
+    }
+
+    // Finish it off with a zero.
+    {
+        if ( is64Bit )
+        {
+            impNameAllocArrayEntry.WriteUInt64( 0, entrySize * numFuncs );
+        }
+        else
+        {
+            impNameAllocArrayEntry.WriteUInt32( 0, entrySize * numFuncs );
+        }
+    }
+
+    return impNameAllocArrayEntry;
+}
+
 void PEFile::CommitDataDirectories( void )
 {
     bool is64Bit = this->is64Bit;
@@ -455,126 +561,16 @@ void PEFile::CommitDataDirectories( void )
                     // either ordinal or name entries.
                     auto& funcs = impDesc.funcs;
 
-                    size_t numFuncs = funcs.size();
-
-                    if ( numFuncs != 0 )
+                    if ( funcs.empty() == false )
                     {
-                        // The size of an entry depends on PE32 or PE32+.
-                        size_t entrySize;
-
-                        if ( is64Bit )
-                        {
-                            entrySize = sizeof(std::uint64_t);
-                        }
-                        else
-                        {
-                            entrySize = sizeof(std::uint32_t);
-                        }
-
-                        // We need to end of the array with a zero-entry to describe the end.
-                        size_t actualArrayItemCount = ( numFuncs + 1 );
-
-                        PESectionAllocation impNameAllocArrayEntry;
-                        rdonlySect.Allocate( impNameAllocArrayEntry, actualArrayItemCount * entrySize, entrySize );
-
-                        for ( size_t n = 0; n < numFuncs; n++ )
-                        {
-                            PEImportDesc::importFunc& funcInfo = funcs[ n ];
-
-                            std::uint64_t entry = 0;
-                            size_t entryWriteOffset = ( entrySize * n );
-
-                            if ( funcInfo.isOrdinalImport )
-                            {
-                                entry |= funcInfo.ordinal_hint;
-
-                                if ( is64Bit )
-                                {
-                                    entry |= PEL_IMAGE_ORDINAL_FLAG64;
-                                }
-                                else
-                                {
-                                    entry |= PEL_IMAGE_ORDINAL_FLAG32;
-                                }
-                            }
-                            else
-                            {
-                                // Dynamic size of the name entry, since it contains optional ordinal hint.
-                                size_t funcNameWriteCount = ( funcInfo.name.size() + 1 );
-                                size_t nameEntrySize = ( sizeof(std::uint16_t) + funcNameWriteCount );
-
-                                // Decide if we have to write a trailing zero byte, as required by the documentation.
-                                // It is required if this entry size is not a multiple of sizeof(WORD).
-                                bool requiresTrailZeroByte = false;
-
-                                if ( ( nameEntrySize % sizeof(std::uint16_t) ) != 0 )
-                                {
-                                    requiresTrailZeroByte = true;
-
-                                    nameEntrySize++;
-                                }
-
-                                PESectionAllocation nameAllocEntry;
-                                rdonlySect.Allocate( nameAllocEntry, nameEntrySize, sizeof(std::uint16_t) );
-
-                                // Ordinal hint.
-                                nameAllocEntry.WriteToSection( &funcInfo.ordinal_hint, sizeof(funcInfo.ordinal_hint), 0 );
-
-                                // Actual name.
-                                nameAllocEntry.WriteToSection( funcInfo.name.c_str(), funcNameWriteCount, sizeof(std::uint16_t) );
-
-                                if ( requiresTrailZeroByte )
-                                {
-                                    nameAllocEntry.WriteUInt8( 0, sizeof(std::uint16_t) + funcNameWriteCount );
-                                }
-
-                                // Because the PE format does not set the flag when it writes a RVA, we
-                                // can use our delayed RVA writer routine without modifications.
-                                impNameAllocArrayEntry.RegisterTargetRVA( entryWriteOffset, nameAllocEntry );
-
-                                funcInfo.nameAllocEntry = std::move( nameAllocEntry );
-                            }
-
-                            // Write the item.
-                            if ( is64Bit )
-                            {
-                                impNameAllocArrayEntry.WriteUInt32( (std::uint32_t)entry, entryWriteOffset );
-                            }
-                            else
-                            {
-                                impNameAllocArrayEntry.WriteUInt64( entry, entryWriteOffset );
-                            }
-                        }
-
-                        // Finish it off with a zero.
-                        {
-                            if ( is64Bit )
-                            {
-                                impNameAllocArrayEntry.WriteUInt64( 0, entrySize * numFuncs );
-                            }
-                            else
-                            {
-                                impNameAllocArrayEntry.WriteUInt32( 0, entrySize * numFuncs );
-                            }
-                        }
-
-                        // Remember the new allocation.
-                        impDesc.impNameArrayAllocEntry = std::move( impNameAllocArrayEntry );
+                        impDesc.impNameArrayAllocEntry =
+                            PEImportDesc::WritePEImportFunctions(
+                                rdonlySect, funcs, is64Bit
+                            );
                     }
 
                     // Allocate and write the module name that we should import from.
-                    {
-                        const std::string& DLLName = impDesc.DLLName;
-
-                        const size_t writeCount = ( DLLName.size() + 1 );
-
-                        PESectionAllocation DLLName_allocEntry;
-                        rdonlySect.Allocate( DLLName_allocEntry, writeCount, 1 );
-                        
-                        DLLName_allocEntry.WriteToSection( DLLName.c_str(), writeCount );
-
-                        impDesc.DLLName_allocEntry = std::move( DLLName_allocEntry );
-                    }
+                    impDesc.DLLName_allocEntry = WriteZeroTermString( rdonlySect, impDesc.DLLName );
 
                     // Since all data is allocated now let us write the descriptor.
                     const size_t descWriteOffset = ( sizeof(PEStructures::IMAGE_IMPORT_DESCRIPTOR) * n );
@@ -586,7 +582,7 @@ void PEFile::CommitDataDirectories( void )
                     nativeImpDesc.ForwarderChain = 0;
                     nativeImpDesc.Name = 0;
                     impDescsAlloc.RegisterTargetRVA( descWriteOffset + offsetof(PEStructures::IMAGE_IMPORT_DESCRIPTOR, Name), impDesc.DLLName_allocEntry );
-                    nativeImpDesc.FirstThunk = impDesc.firstThunkOffset;
+                    nativeImpDesc.FirstThunk = impDesc.firstThunkRef.GetRVA();
 
                     impDescsAlloc.WriteToSection( &nativeImpDesc, sizeof(nativeImpDesc), descWriteOffset );
                 }
@@ -1235,7 +1231,69 @@ void PEFile::CommitDataDirectories( void )
             // it is maintained by compilers.
 
             // * DELAY LOAD IMPORTS.
-            //TODO.
+            auto& delayLoads = this->delayLoads;
+
+            std::uint32_t numDelayLoads = (std::uint32_t)delayLoads.size();
+
+            if ( numDelayLoads > 0 )
+            {
+                // Just like the regular import descriptors, delay loads are stored in a simple
+                // array of descriptors. There is a NULL descriptor at the end.
+                std::uint32_t writeNumDescriptors = ( numDelayLoads + 1 );
+
+                PESectionAllocation delayLoadsAlloc;
+                rdonlySect.Allocate( delayLoadsAlloc, writeNumDescriptors * sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR), sizeof(std::uint32_t) );
+
+                // Write all descriptors.
+                for ( std::uint32_t n = 0; n < numDelayLoads; n++ )
+                {
+                    PEDelayLoadDesc& delayDesc = delayLoads[ n ];
+
+                    // Write the DLL name.
+                    delayDesc.DLLName_allocEntry = WriteZeroTermString( rdonlySect, delayDesc.DLLName );
+
+                    // Write the import names.
+                    auto& funcs = delayDesc.importNames;
+
+                    if ( funcs.empty() == false )
+                    {
+                        delayDesc.importNamesAllocEntry =
+                            PEImportDesc::WritePEImportFunctions(
+                                rdonlySect, funcs, is64Bit
+                            );
+                    }
+
+                    // Calculate the offset we write this descriptor at.
+                    std::uint32_t descWriteOff = ( n * sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR) );
+
+                    PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR nativeDesc;
+                    nativeDesc.Attributes.AllAttributes = delayDesc.attrib;
+                    nativeDesc.DllNameRVA = 0;
+                    delayLoadsAlloc.RegisterTargetRVA( descWriteOff + offsetof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR, DllNameRVA), delayDesc.DLLName_allocEntry );
+                    nativeDesc.ModuleHandleRVA = delayDesc.DLLHandleRef.GetRVA();
+                    nativeDesc.ImportAddressTableRVA = delayDesc.IATRef.GetRVA();
+                    nativeDesc.ImportNameTableRVA = 0;
+                    delayLoadsAlloc.RegisterTargetRVA( descWriteOff + offsetof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR, ImportNameTableRVA), delayDesc.importNamesAllocEntry );
+                    nativeDesc.BoundImportAddressTableRVA = delayDesc.boundImportAddrTableRef.GetRVA();
+                    nativeDesc.UnloadInformationTableRVA = delayDesc.unloadInfoTableRef.GetRVA();
+                    nativeDesc.TimeDateStamp = delayDesc.timeDateStamp;
+
+                    // Write away!
+                    delayLoadsAlloc.WriteToSection( &nativeDesc, sizeof(nativeDesc), descWriteOff );
+                }
+
+                // At the end, write the NULL termination.
+                {
+                    std::uint32_t nullWriteOff = ( numDelayLoads * sizeof(PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR) );
+
+                    PEStructures::IMAGE_DELAYLOAD_DESCRIPTOR nullDesc = { 0 };
+
+                    delayLoadsAlloc.WriteToSection( &nullDesc, sizeof(nullDesc), nullWriteOff );
+                }
+
+                // Remember the valid data.
+                this->delayLoadsAllocEntry = std::move( delayLoadsAlloc );
+            }
         }
 
         // SECTION-ALLOC PHASE.

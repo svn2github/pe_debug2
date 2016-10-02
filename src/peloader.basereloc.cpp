@@ -140,9 +140,12 @@ void PEFile::OnWriteAbsoluteVA( PESection *writeSect, std::uint32_t sectOff, boo
         needsRelocation = true;
     }
 
-    if ( this->baseRelocs.empty() == false )
+    if ( !needsRelocation )
     {
-        needsRelocation = true;
+        if ( this->baseRelocs.empty() == false )
+        {
+            needsRelocation = true;
+        }
     }
 
     if ( needsRelocation )

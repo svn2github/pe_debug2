@@ -388,7 +388,7 @@ void PEFile::PESection::PEPlacedOffset::WriteIntoData( PEFile *peImage, PESectio
     {
         // Calculate the absolute VA.
         std::uint32_t targetVA = 0;
-
+        
         if ( targetSect )
         {
             targetVA = ( (std::uint32_t)imageBase + targetSect->ResolveRVA( targetOff ) );

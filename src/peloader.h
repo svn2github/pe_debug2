@@ -1268,6 +1268,22 @@ public:
     PESection* FindFirstAllocatableSection( void );
     bool RemoveSection( PESection *section );
 
+    // Simple helpers.
+    template <typename charType>
+    static inline PESectionAllocation WriteZeroTermString( PESection& writeSect, const std::basic_string <charType>& string )
+    {
+        const std::uint32_t writeCount = (std::uint32_t)( string.size() + 1 );
+
+        const std::uint32_t writeSize = ( writeCount * sizeof(charType) );
+
+        PESectionAllocation allocEntry;
+        writeSect.Allocate( allocEntry, writeSize, sizeof(charType) );
+                        
+        allocEntry.WriteToSection( string.c_str(), writeSize );
+
+        return allocEntry;
+    }
+
     // Data directory business.
     struct PEExportDir
     {
@@ -1332,13 +1348,20 @@ public:
 
         struct importFunc
         {
-            std::uint64_t ordinal_hint;
+            std::uint16_t ordinal_hint;
             std::string name;
             bool isOrdinalImport;
 
             PESectionAllocation nameAllocEntry;
         };
-        std::vector <importFunc> funcs;
+
+        typedef std::vector <importFunc> functions_t;
+
+        // Helper API.
+        static functions_t ReadPEImportFunctions( PESectionMan& sections, std::uint32_t rva, PESectionAllocation& allocEntry, bool is64Bit );
+        static PESectionAllocation WritePEImportFunctions( PESection& writeSect, functions_t& functionList, bool is64Bit );
+
+        functions_t funcs;
         std::string DLLName;
 
         PESectionAllocation impNameArrayAllocEntry;
@@ -1346,7 +1369,7 @@ public:
         
         // Meta-information we must keep because it is baked
         // by compilers.
-        std::uint32_t firstThunkOffset;
+        PESectionDataReference firstThunkRef;
     };
     std::vector <PEImportDesc> imports;
 
@@ -1655,14 +1678,16 @@ public:
 
     struct PEDelayLoadDesc
     {
+        // Uses a similar layout to the PEImportDesc data.
         std::uint32_t attrib;
         std::string DLLName;
         PESectionAllocation DLLName_allocEntry;
-        std::uint32_t DLLHandleOffset;
-        std::uint32_t IATOffset;
-        std::uint32_t importNameTableOffset;
-        std::uint32_t boundImportAddrTableOffset;
-        std::uint32_t unloadInfoTableOffset;
+        PESectionDataReference DLLHandleRef;
+        PESectionDataReference IATRef;
+        PEImportDesc::functions_t importNames;
+        PESectionAllocation importNamesAllocEntry;
+        PESectionDataReference boundImportAddrTableRef;
+        PESectionDataReference unloadInfoTableRef;
         std::uint32_t timeDateStamp;
     };
     std::vector <PEDelayLoadDesc> delayLoads;
