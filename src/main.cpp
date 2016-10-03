@@ -1,11 +1,15 @@
 #include "StdInc.h"
 #include <memory>
+#include <codecvt>
+#include <regex>
 
 #include <assert.h>
 
 #include <CFileSystem.h>
 
 #include <peframework.h>
+
+#include <gtaconfig/include.h>
 
 // Get PDB headers.
 #include "msft_pdb/include/cvinfo.h"
@@ -20,6 +24,70 @@ thread_local int myValueTest = 1337;
 
 __declspec(dllexport) int meow = 0;
 
+// Utility to parse debug information from a text file, created by an IDC script...
+// https://www.hex-rays.com/products/ida/support/freefiles/dumpinfo.idc
+struct nameInfo
+{
+    std::string name;
+    std::uint64_t absolute_va;
+};
+typedef std::vector <nameInfo> symbolNames_t;
+
+static const std::regex patternMatchItem( "[\\w\\d\\.]+\\:([0123456789aAbBcCdDeEfF]+)[\\s\\t]+\\(([^)]+)\\)[\\s\\t]+(.+)" );
+
+static symbolNames_t ParseSymbolNames( CFile *inputStream )
+{
+    symbolNames_t symbols;
+
+    // We skip 11 lines.
+    for ( size_t n = 0; n < 11; n++ )
+    {
+        std::string _skipContent;
+
+        Config::GetConfigLine( inputStream, _skipContent );
+    }
+
+    // Read all entries.
+    while ( inputStream->IsEOF() == false )
+    {
+        std::string lineCont;
+
+        bool gotLine = Config::GetConfigLine( inputStream, lineCont );
+
+        if ( gotLine )
+        {
+            std::smatch results;
+
+            bool gotMatch = std::regex_match( lineCont, results, patternMatchItem );
+
+            if ( gotMatch && results.size() == 4 )
+            {
+                std::string offset = std::move( results[ 1 ] );
+                std::string typeName = std::move( results[ 2 ] );
+                std::string valueString = std::move( results[ 3 ] );
+
+                if ( typeName == "UserName" )
+                {
+                    try
+                    {
+                        nameInfo newInfo;
+                        newInfo.name = std::move( valueString );
+                        newInfo.absolute_va = std::stoull( offset, NULL, 16 );
+
+                        symbols.push_back( std::move( newInfo ) );
+                    }
+                    catch( ... )
+                    {
+                        // Ignore cast error.
+                    }
+                }
+            }
+        }
+    }
+
+    return symbols;
+}
+
 // Thanks to https://www.snip2code.com/Snippet/735099/Dump-PDB-information-from-a-PE-file/
 const DWORD CV_SIGNATURE_RSDS = 0x53445352; // 'SDSR'
 
@@ -33,6 +101,27 @@ struct CV_INFO_PDB70
 
 static void tryGenerateSamplePDB( PEFile& peFile )
 {
+    // Prepare symbol names from an input file.
+    symbolNames_t symbols;
+    {
+        std::unique_ptr <CFile> symbolsFile( fileRoot->Open( L"symbols.txt", "rb" ) );
+
+        if ( symbolsFile )
+        {
+            symbols = ParseSymbolNames( symbolsFile.get() );
+        }
+    }
+    
+    // Establish a file location.
+    std::wstring widePDBFileLocation;
+    {
+        filePath pdbFileLocation;
+
+        fileRoot->GetFullPathFromRoot( L"gen.pdb", true, pdbFileLocation );
+
+        widePDBFileLocation = pdbFileLocation.convert_unicode();
+    }
+
     EC error_code_out;
     wchar_t errorBuf[ 4096 ];
 
@@ -40,7 +129,7 @@ static void tryGenerateSamplePDB( PEFile& peFile )
 
     BOOL openSuccess =
         PDB::Open2W(
-            L"pdb_test.pdb", "wb", &error_code_out, errorBuf, _countof(errorBuf),
+            widePDBFileLocation.c_str(), "wb", &error_code_out, errorBuf, _countof(errorBuf),
             &pdbHandle
         );
 
@@ -67,7 +156,7 @@ static void tryGenerateSamplePDB( PEFile& peFile )
         {
             Mod *mainMod = NULL;
         
-            BOOL gotMainMod = dbiHandle->OpenMod( "main", "main-module", &mainMod );
+            BOOL gotMainMod = dbiHandle->OpenMod( "main", "main-module (made possible by The_GTA, wordwhirl@outlook.de)", &mainMod );
 
             if ( gotMainMod == TRUE )
             {
@@ -78,13 +167,49 @@ static void tryGenerateSamplePDB( PEFile& peFile )
             }
         }
 
-        // Add some test symbols.
+        // Embed parsed symbols as publics.
         {
             CV_PUBSYMFLAGS pubflags_func;
             pubflags_func.grfFlags = 0;
             pubflags_func.fFunction = true;
 
-            dbiHandle->AddPublicW( L"testsym", 1, 0x10, pubflags_func.grfFlags );
+            CV_PUBSYMFLAGS pubflags_data;
+            pubflags_data.grfFlags = 0;
+
+            std::uint64_t imageBase = peFile.GetImageBase();
+
+            for ( const nameInfo& infoItem : symbols )
+            {
+                // Convert the VA into a RVA.
+                std::uint32_t rva = (std::uint32_t)( infoItem.absolute_va - imageBase );
+
+                // Find the section associated with this item.
+                // If we found it, add it as public symbol.
+                std::uint32_t sectIndex = 0;
+
+                PEFile::PESection *symbSect = peFile.FindSectionByRVA( rva, &sectIndex );
+
+                if ( symbSect )
+                {
+                    // Get the offset into the section.
+                    std::uint32_t native_off = ( rva - symbSect->GetVirtualAddress() );
+                    
+                    // If this item is in the executable section, we put a function symbol.
+                    // Otherwise we put a data symbol.
+                    CV_pubsymflag_t useFlags;
+
+                    if ( symbSect->chars.sect_mem_execute )
+                    {
+                        useFlags = pubflags_func.grfFlags;
+                    }
+                    else
+                    {
+                        useFlags = pubflags_data.grfFlags;
+                    }
+
+                    dbiHandle->AddPublic2( infoItem.name.c_str(), sectIndex + 1, native_off, useFlags );
+                }
+            }
         }
 
         // Write information about all sections.
@@ -137,15 +262,25 @@ static void tryGenerateSamplePDB( PEFile& peFile )
         // First write the header.
         CV_INFO_PDB70 pdbDebugEntry;
         pdbDebugEntry.CvSignature = CV_SIGNATURE_RSDS;
-        pdbHandle->QuerySignature2( &pdbDebugEntry.Signature );
+        BOOL gotSig = pdbHandle->QuerySignature2( &pdbDebugEntry.Signature );
         pdbDebugEntry.Age = pdbHandle->QueryAge();
+
+        assert( gotSig == TRUE );
 
         stream.Write( &pdbDebugEntry, sizeof(pdbDebugEntry) );
 
-        // Then write the zero-terminated PDB file location, UTF-8.
-        const std::string pdbLocation = "C:\\Users\\The_GTA\\Desktop\\pe_debug\\output\\pdb_test.pdb";
+        // Inside of the EXE file we must use backslashes.
+        std::replace( widePDBFileLocation.begin(), widePDBFileLocation.end(), L'/', L'\\' );
 
-        stream.Write( pdbLocation.c_str(), pdbLocation.size() + 1 );
+        // Create a UTF-8 version of the wide PDB location string.
+        std::string utf8_pdbLoc;
+        {
+            std::wstring_convert <std::codecvt_utf8 <wchar_t>> utf8_conv;
+            utf8_pdbLoc = utf8_conv.to_bytes( widePDBFileLocation );
+        }
+
+        // Then write the zero-terminated PDB file location, UTF-8.
+        stream.Write( utf8_pdbLoc.c_str(), utf8_pdbLoc.size() + 1 );
 
         // Done!
     }
@@ -166,7 +301,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        const char *inputName = "pdb_test.exe";
+        const char *inputName = "gta_sa.exe";
 
         std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 
