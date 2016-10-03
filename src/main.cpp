@@ -20,10 +20,88 @@ thread_local int myValueTest = 1337;
 
 __declspec(dllexport) int meow = 0;
 
+// Thanks to https://www.snip2code.com/Snippet/735099/Dump-PDB-information-from-a-PE-file/
+const DWORD CV_SIGNATURE_RSDS = 0x53445352; // 'SDSR'
+
+struct CV_INFO_PDB70
+{
+    DWORD      CvSignature;
+    SIG70      Signature;
+    DWORD      Age;
+    //BYTE       PdbFileName[1];
+};
+
+static void tryGenerateSamplePDB( PEFile& peFile )
+{
+    EC error_code_out;
+    wchar_t errorBuf[ 4096 ];
+
+    PDB *pdbHandle;
+
+    BOOL openSuccess =
+        PDB::Open2W(
+            L"pdb_test.pdb", "wb", &error_code_out, errorBuf, _countof(errorBuf),
+            &pdbHandle
+        );
+
+    if ( openSuccess == FALSE )
+    {
+        // We fail in life.
+        return;
+    }
+
+    // Yes!
+    DBI *dbiHandle;
+
+    BOOL dbiOpenSuccess =  pdbHandle->OpenDBI( NULL, "wb", &dbiHandle );
+
+    if ( dbiOpenSuccess == TRUE )
+    {
+        // One step closer.
+
+        // I guess we should try creating a module and putting symbols into it?
+        // Or something else... Let's see...
+        dbiHandle->SetMachineType( IMAGE_FILE_MACHINE_I386 );
+
+        
+
+        // Remeber to close our stuff.
+        dbiHandle->Close();
+    }
+
+    // Make sure everything is written?
+    pdbHandle->Commit();
+
+    // Inject PDB information into the EXE file.
+    {
+        peFile.ClearDebugDataOfType( IMAGE_DEBUG_TYPE_CODEVIEW );
+
+        PEFile::PEDebugDesc& cvDebug = peFile.AddDebugData( IMAGE_DEBUG_TYPE_CODEVIEW );
+
+        PEFile::fileSpaceStream_t stream = cvDebug.dataStore.OpenStream();
+
+        // First write the header.
+        CV_INFO_PDB70 pdbDebugEntry;
+        pdbDebugEntry.CvSignature = CV_SIGNATURE_RSDS;
+        pdbHandle->QuerySignature2( &pdbDebugEntry.Signature );
+        pdbDebugEntry.Age = pdbHandle->QueryAge();
+
+        stream.Write( &pdbDebugEntry, sizeof(pdbDebugEntry) );
+
+        // Then write the zero-terminated PDB file location, UTF-8.
+        const std::string pdbLocation = "C:\\Users\\The_GTA\\Desktop\\pe_debug\\output\\pdb_test.pdb";
+
+        stream.Write( pdbLocation.c_str(), pdbLocation.size() + 1 );
+
+        // Done!
+    }
+
+    // Remember to close our PDB again for sanity!
+    pdbHandle->Close();
+}
+
 int main( int argc, char *argv[] )
 {
-    unsigned long intfVer = PDB::QueryInterfaceVersionStatic();
-
     // We want to read our own PE executable.
     // After that we want to write it out again in the exactly same format.
     fs_construction_params constrParam;
@@ -34,7 +112,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        const char *inputName = "gta_sa.exe";
+        const char *inputName = "pdb_test.exe";
 
         std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 
@@ -43,6 +121,9 @@ int main( int argc, char *argv[] )
             PEFile filedata;
 
             filedata.LoadFromDisk( filePtr.get() );
+
+            // Do some PDB magic I guess.
+            tryGenerateSamplePDB( filedata );
 
             // Decide on the PE image type what output filename we should pick.
             filePath outFileName;
