@@ -7,6 +7,11 @@
 
 #include <peframework.h>
 
+// Get PDB headers.
+#include "msft_pdb/include/cvinfo.h"
+#include "msft_pdb/langapi/include/pdb.h"
+#include "msft_pdb/langapi/shared/crc32.h"
+
 extern CFileSystem *fileSystem;
 
 thread_local std::string myTestString = "hello_world";
@@ -17,6 +22,8 @@ __declspec(dllexport) int meow = 0;
 
 int main( int argc, char *argv[] )
 {
+    unsigned long intfVer = PDB::QueryInterfaceVersionStatic();
+
     // We want to read our own PE executable.
     // After that we want to write it out again in the exactly same format.
     fs_construction_params constrParam;

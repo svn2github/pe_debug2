@@ -23,6 +23,21 @@
     <ClInclude Include="..\shared\debugsdk\dbgheap.h">
       <Filter>debugsdk</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\msft_pdb\include\cvconst.h">
+      <Filter>msft_pdb\codeview</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\msft_pdb\include\cvinfo.h">
+      <Filter>msft_pdb\codeview</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\msft_pdb\langapi\include\pdb.h">
+      <Filter>msft_pdb\langapi</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\msft_pdb\langapi\shared\crc32.h">
+      <Filter>msft_pdb\langapi</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\pdb_essential\vcver.h">
+      <Filter>pdb_essential</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <Filter Include="config">
@@ -30,6 +45,18 @@
     </Filter>
     <Filter Include="debugsdk">
       <UniqueIdentifier>{b295a017-a08c-4493-9ccd-21ea52f67cc9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="msft_pdb">
+      <UniqueIdentifier>{b8338be0-4713-4ada-864b-d122b9138698}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="msft_pdb\codeview">
+      <UniqueIdentifier>{a5472aeb-580c-44bc-9ec2-d181f951f497}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="msft_pdb\langapi">
+      <UniqueIdentifier>{b29ff9e1-2f5a-457f-97a2-1eba1c18d5a1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="pdb_essential">
+      <UniqueIdentifier>{a5251f84-9ecb-4569-9d03-3eb005fc6498}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
 </Project>
