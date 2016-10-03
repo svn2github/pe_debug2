@@ -63,9 +63,63 @@ static void tryGenerateSamplePDB( PEFile& peFile )
         // Or something else... Let's see...
         dbiHandle->SetMachineType( IMAGE_FILE_MACHINE_I386 );
 
+        // It is a good idea to create a dummy module, at least.
+        {
+            Mod *mainMod = NULL;
         
+            BOOL gotMainMod = dbiHandle->OpenMod( "main", "main-module", &mainMod );
 
-        // Remeber to close our stuff.
+            if ( gotMainMod == TRUE )
+            {
+                // TODO: maybe do some stuff with this.
+
+                // Close the main mod again.
+                mainMod->Close();
+            }
+        }
+
+        // Add some test symbols.
+        {
+            CV_PUBSYMFLAGS pubflags_func;
+            pubflags_func.grfFlags = 0;
+            pubflags_func.fFunction = true;
+
+            dbiHandle->AddPublicW( L"testsym", 1, 0x10, pubflags_func.grfFlags );
+        }
+
+        // Write information about all sections.
+        Dbg *dbgSectHeader;
+
+        BOOL gotSectStream = dbiHandle->OpenDbg( dbgtypeSectionHdr, &dbgSectHeader );
+
+        if ( gotSectStream == TRUE )
+        {
+            // We do not want any previous data.
+            dbgSectHeader->Clear();
+
+            // Write new things.
+            peFile.ForAllSections(
+                [&]( PEFile::PESection *sect )
+            {
+                IMAGE_SECTION_HEADER header;
+                strncpy( (char*)header.Name, sect->shortName.c_str(), _countof(header.Name) );
+                header.Misc.VirtualSize = sect->GetVirtualSize();
+                header.VirtualAddress = sect->GetVirtualAddress();
+                header.SizeOfRawData = (DWORD)sect->stream.Size();
+                header.PointerToRawData = 0;
+                header.PointerToRelocations = 0;
+                header.PointerToLinenumbers = 0;
+                header.NumberOfRelocations = 0;
+                header.NumberOfLinenumbers = 0;
+                header.Characteristics = sect->GetPENativeFlags();
+
+                dbgSectHeader->Append( 1, &header );
+            });
+
+            dbgSectHeader->Close();
+        }
+
+        // Remember to close our stuff.
         dbiHandle->Close();
     }
 
