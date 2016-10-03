@@ -2,21 +2,15 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
     <ClCompile Include="..\src\main.cpp" />
-    <ClCompile Include="..\src\peloader.cpp" />
-    <ClCompile Include="..\src\peloader.read.cpp" />
-    <ClCompile Include="..\src\peloader.write.cpp" />
     <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp">
       <Filter>debugsdk</Filter>
     </ClCompile>
     <ClCompile Include="..\shared\debugsdk\dbgheap.cpp">
       <Filter>debugsdk</Filter>
     </ClCompile>
-    <ClCompile Include="..\src\peloader.basereloc.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\StdInc.h" />
-    <ClInclude Include="..\src\peloader.h" />
-    <ClInclude Include="..\src\peloader.internal.hxx" />
     <ClInclude Include="..\src\config\debugsdk_config.h">
       <Filter>config</Filter>
     </ClInclude>
@@ -29,10 +23,6 @@
     <ClInclude Include="..\shared\debugsdk\dbgheap.h">
       <Filter>debugsdk</Filter>
     </ClInclude>
-    <ClInclude Include="..\src\peloader.common.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <Natvis Include="peloader.natvis" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="config">

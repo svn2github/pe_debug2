@@ -5,7 +5,7 @@
 
 #include <CFileSystem.h>
 
-#include "peloader.h"
+#include <peframework.h>
 
 extern CFileSystem *fileSystem;
 
@@ -27,7 +27,7 @@ int main( int argc, char *argv[] )
     try
     {
         // Read some PE file.
-        const char *inputName = "out.exe";
+        const char *inputName = "gta_sa.exe";
 
         std::unique_ptr <CFile> filePtr( fileRoot->Open( inputName, "rb" ) );
 

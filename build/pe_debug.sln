@@ -6,6 +6,7 @@ MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "pe_debug", "pe_debug.vcxproj", "{AF965EE0-B53D-42B9-95B5-B2D5521ED4E0}"
 	ProjectSection(ProjectDependencies) = postProject
 		{6E793DA8-5641-4BBB-BCB0-43BF10682E14} = {6E793DA8-5641-4BBB-BCB0-43BF10682E14}
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05} = {D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}
 	EndProjectSection
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Dependencies", "Dependencies", "{2115EC3D-4573-49B2-B294-52F4A43043B1}"
@@ -19,6 +20,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "FileSystem", "..\shared\Fil
 	EndProjectSection
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "NativeExecutive", "..\shared\NativeExecutive\vs2015\NativeExecutive.vcxproj", "{7E697733-5C68-49B4-82D4-A313210D49DF}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "peframework", "..\shared\peframework\build\peframework.vcxproj", "{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -60,6 +63,14 @@ Global
 		{7E697733-5C68-49B4-82D4-A313210D49DF}.Release|x64.Build.0 = Release|x64
 		{7E697733-5C68-49B4-82D4-A313210D49DF}.Release|x86.ActiveCfg = Release|Win32
 		{7E697733-5C68-49B4-82D4-A313210D49DF}.Release|x86.Build.0 = Release|Win32
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Debug|x64.ActiveCfg = Debug|x64
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Debug|x64.Build.0 = Debug|x64
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Debug|x86.ActiveCfg = Debug|Win32
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Debug|x86.Build.0 = Debug|Win32
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Release|x64.ActiveCfg = Release|x64
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Release|x64.Build.0 = Release|x64
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Release|x86.ActiveCfg = Release|Win32
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -68,5 +79,6 @@ Global
 		{65D5E721-48DD-4DA9-9903-6E2FDD90725A} = {2115EC3D-4573-49B2-B294-52F4A43043B1}
 		{6E793DA8-5641-4BBB-BCB0-43BF10682E14} = {2115EC3D-4573-49B2-B294-52F4A43043B1}
 		{7E697733-5C68-49B4-82D4-A313210D49DF} = {2115EC3D-4573-49B2-B294-52F4A43043B1}
+		{D9D7F4D7-423C-4DC0-AE95-A3DF0D113D05} = {2115EC3D-4573-49B2-B294-52F4A43043B1}
 	EndGlobalSection
 EndGlobal
