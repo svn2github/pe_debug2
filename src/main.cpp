@@ -11,6 +11,8 @@
 
 #include <gtaconfig/include.h>
 
+#include "mangle.h"
+
 // Get PDB headers.
 #include "msft_pdb/include/cvinfo.h"
 #include "msft_pdb/langapi/include/pdb.h"
@@ -178,7 +180,7 @@ static void tryGenerateSamplePDB( PEFile& peFile )
 
             std::uint64_t imageBase = peFile.GetImageBase();
 
-            for ( const nameInfo& infoItem : symbols )
+            for ( nameInfo& infoItem : symbols )
             {
                 // Convert the VA into a RVA.
                 std::uint32_t rva = (std::uint32_t)( infoItem.absolute_va - imageBase );
@@ -207,7 +209,20 @@ static void tryGenerateSamplePDB( PEFile& peFile )
                         useFlags = pubflags_data.grfFlags;
                     }
 
-                    dbiHandle->AddPublic2( infoItem.name.c_str(), sectIndex + 1, native_off, useFlags );
+                    // Try to transform the symbol name into a C++ representation if we can.
+                    std::string symbName = std::move( infoItem.name );
+                    {
+                        ProgFunctionSymbol symbCodec;
+                        bool gotSymbol = symbCodec.ParseMangled( symbName.c_str() );
+
+                        if ( gotSymbol )
+                        {
+                            //TODO.
+                            //symbName = symbCodec.OutputMangled( ProgFunctionSymbol::eManglingType::VISC );
+                        }
+                    }
+
+                    dbiHandle->AddPublic2( symbName.c_str(), sectIndex + 1, native_off, useFlags );
                 }
             }
         }

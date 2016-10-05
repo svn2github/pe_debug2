@@ -189,12 +189,14 @@
     <ClCompile Include="..\shared\debugsdk\dbgheap.cpp" />
     <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp" />
     <ClCompile Include="..\src\main.cpp" />
+    <ClCompile Include="..\src\mangle.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\shared\debugsdk\dbgheap.h" />
     <ClInclude Include="..\shared\debugsdk\dbgtrace.h" />
     <ClInclude Include="..\shared\debugsdk\dbgtrace.vendor.hwbrk.hxx" />
     <ClInclude Include="..\src\config\debugsdk_config.h" />
+    <ClInclude Include="..\src\mangle.h" />
     <ClInclude Include="..\src\msft_pdb\include\cvconst.h" />
     <ClInclude Include="..\src\msft_pdb\include\cvinfo.h" />
     <ClInclude Include="..\src\msft_pdb\langapi\include\pdb.h" />

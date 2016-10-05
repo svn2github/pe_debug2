@@ -8,6 +8,7 @@
     <ClCompile Include="..\shared\debugsdk\dbgheap.cpp">
       <Filter>debugsdk</Filter>
     </ClCompile>
+    <ClCompile Include="..\src\mangle.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\StdInc.h" />
@@ -38,6 +39,7 @@
     <ClInclude Include="..\src\pdb_essential\vcver.h">
       <Filter>pdb_essential</Filter>
     </ClInclude>
+    <ClInclude Include="..\src\mangle.h" />
   </ItemGroup>
   <ItemGroup>
     <Filter Include="config">
