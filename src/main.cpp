@@ -110,7 +110,11 @@ static void tryGenerateSamplePDB( PEFile& peFile )
 
         if ( symbolsFile )
         {
+            printf( "found symbols file, reading.\n" );
+
             symbols = ParseSymbolNames( symbolsFile.get() );
+
+            printf( "finished reading symbols file.\n" );
         }
     }
     
@@ -123,6 +127,8 @@ static void tryGenerateSamplePDB( PEFile& peFile )
 
         widePDBFileLocation = pdbFileLocation.convert_unicode();
     }
+
+    printf( "generating PDB file\n" );
 
     EC error_code_out;
     wchar_t errorBuf[ 4096 ];
@@ -170,7 +176,10 @@ static void tryGenerateSamplePDB( PEFile& peFile )
         }
 
         // Embed parsed symbols as publics.
+        if ( symbols.empty() == false )
         {
+            printf( "embedding symbols into PDB\n" );
+
             CV_PUBSYMFLAGS pubflags_func;
             pubflags_func.grfFlags = 0;
             pubflags_func.fFunction = true;
@@ -269,6 +278,8 @@ static void tryGenerateSamplePDB( PEFile& peFile )
     // Make sure everything is written?
     pdbHandle->Commit();
 
+    printf( "finished writing to PDB file!\n" );
+
     // Inject PDB information into the EXE file.
     {
         peFile.ClearDebugDataOfType( IMAGE_DEBUG_TYPE_CODEVIEW );
@@ -303,12 +314,20 @@ static void tryGenerateSamplePDB( PEFile& peFile )
         // Done!
     }
 
+    printf( "injected debug information into PE file\n" );
+
     // Remember to close our PDB again for sanity!
     pdbHandle->Close();
 }
 
 int main( int argc, char *argv[] )
 {
+    printf(
+        "PEframework PE file debug extender written by The_GTA\n" \
+        "Made to advance the professionality of the GTA community hacking experience\n" \
+        "wordwhirl@outlook.de\n\n"
+    );
+
     // We want to read our own PE executable.
     // After that we want to write it out again in the exactly same format.
     fs_construction_params constrParam;
@@ -325,9 +344,13 @@ int main( int argc, char *argv[] )
 
         if ( filePtr )
         {
+            printf( "found input file, processing...\n" );
+
             PEFile filedata;
 
             filedata.LoadFromDisk( filePtr.get() );
+
+            printf( "loaded input file from disk\n" );
 
             // Do some PDB magic I guess.
             tryGenerateSamplePDB( filedata );
@@ -361,8 +384,16 @@ int main( int argc, char *argv[] )
 
             if ( outFilePtr )
             {
+                printf( "writing PE file\n" );
+
                 filedata.WriteToStream( outFilePtr.get() );
+
+                printf( "done!\n" );
             }
+        }
+        else
+        {
+            printf( "failed to find input file\n" );
         }
     }
     catch( ... )
@@ -374,6 +405,8 @@ int main( int argc, char *argv[] )
 
     // Clean-up.
     CFileSystem::Destroy( fileSystem );
+
+    printf( "\n\nHave fun!\n" );
 
     // :-)
     return 0;
