@@ -5,9 +5,11 @@
 #include <sdk/MacroUtils.h>
 
 #include <cctype>
+#include <sstream>
 
 // Helpful docs:
 //  https://github.com/gchatelet/gcc_cpp_mangling_documentation
+//  http://www.agner.org/optimize/calling_conventions.pdf
 
 // GCC mangling operator symbols.
 #define GCC_OPSYMB_NEW                  "nw"
@@ -56,6 +58,8 @@
 #define GCC_OPSYMB_SIZEOF               "st"
 #define GCC_OPSYMB_SIZEOF2              "sz"
 #define GCC_OPSYMB_CAST                 "cv"
+#define GCC_OPSYMB_MAKE_POINTER         "de"
+#define GCC_OPSYMB_MAKE_REFERENCE       "ad"
 
 // GCC mangling type sequences.
 #define GCC_TYPESYMB_VOID               'v'
@@ -78,7 +82,7 @@
 #define GCC_TYPESYMB_DOUBLE             'd'
 #define GCC_TYPESYMB_LONG_DOUBLE        'e'
 #define GCC_TYPESYMB_FLOAT128           'g'
-#define GCC_TYPESYMB_ELLIPSIS           'z'
+#define GCC_TYPESYMB_VARARG             'z'
 #define GCC_TYPESYMB_VENDOR             'u'
 
 // GCC mangling type qualifiers.
@@ -86,6 +90,116 @@
 #define GCC_TYPEQUALSYMB_REFERENCE      "R"
 #define GCC_TYPEQUALSYMB_RVAL_REFERENCE "O"
 #define GCC_TYPEQUALSYMB_VENDOR         "U"
+
+// MSVC member modifier codes.
+#define MSVC_MEMBMOD_PRIV_DEFAULT       'A'
+#define MSVC_MEMBMOD_PRIV_FAR           'B'
+#define MSVC_MEMBMOD_PRIV_STATIC        'C'
+#define MSVC_MEMBMOD_PRIV_STATIC_FAR    'D'
+#define MSVC_MEMBMOD_PRIV_VIRTUAL       'E'
+#define MSVC_MEMBMOD_PRIV_VIRTUAL_FAR   'F'
+
+#define MSVC_MEMBMOD_PROT_DEFAULT       'I'
+#define MSVC_MEMBMOD_PROT_FAR           'J'
+#define MSVC_MEMBMOD_PROT_STATIC        'K'
+#define MSVC_MEMBMOD_PROT_STATIC_FAR    'L'
+#define MSVC_MEMBMOD_PROT_VIRTUAL       'M'
+#define MSVC_MEMBMOD_PROT_VIRTUAL_FAR   'N'
+
+#define MSVC_MEMBMOD_PUB_DEFAULT        'Q'
+#define MSVC_MEMBMOD_PUB_FAR            'R'
+#define MSVC_MEMBMOD_PUB_STATIC         'S'
+#define MSVC_MEMBMOD_PUB_STATIC_FAR     'T'
+#define MSVC_MEMBMOD_PUB_VIRTUAL        'U'
+#define MSVC_MEMBMOD_PUB_VIRTUAL_FAR    'V'
+
+// MSVC storage class codes
+#define MSVC_STORAGE_NEAR               'A'
+#define MSVC_STORAGE_CONST              'B'
+#define MSVC_STORAGE_VOLATILE           'C'
+#define MSVC_STORAGE_CONST_VOLATILE     'D'
+#define MSVC_STORAGE_FAR                'E'
+#define MSVC_STORAGE_CONST_FAR          'F'
+#define MSVC_STORAGE_VOLATILE_FAR       'G'
+#define MSVC_STORAGE_CONST_VOLATILE_FAR 'H'
+#define MSVC_STORAGE_HUGE               'I'
+
+// MSVC call convention codes
+#define MSVC_CALLCONV_CDECL             'A'
+#define MSVC_CALLCONV_PASCAL            'C'
+#define MSVC_CALLCONV_THISCALL          'E'
+#define MSVC_CALLCONV_STDCALL           'G'
+#define MSVC_CALLCONV_FASTCALL          'I'
+
+// MSVC type identifiers
+#define MSVC_TYPESYMB_VOID                  "X"
+#define MSVC_TYPESYMB_BOOL                  "_N"
+#define MSVC_TYPESYMB_CHAR                  "D"
+#define MSVC_TYPESYMB_UNSIGNED_CHAR         "E"
+#define MSVC_TYPESYMB_SHORT                 "F"
+#define MSVC_TYPESYMB_UNSIGNED_SHORT        "G"
+#define MSVC_TYPESYMB_INT                   "H"
+#define MSVC_TYPESYMB_UNSIGNED_INT          "I"
+#define MSVC_TYPESYMB_LONG                  "J"
+#define MSVC_TYPESYMB_UNSIGNED_LONG         "K"
+#define MSVC_TYPESYMB_LONG_LONG             "_J"
+#define MSVC_TYPESYMB_UNSIGNED_LONG_LONG    "_K"
+#define MSVC_TYPESYMB_WCHAR_T               "_W"
+#define MSVC_TYPESYMB_FLOAT                 "M"
+#define MSVC_TYPESYMB_DOUBLE                "N"
+#define MSVC_TYPESYMB_LONG_DOUBLE           "O"
+#define MSVC_TYPESYMB_VARARG                "Z"
+
+#define MSVC_TYPESYMB_UNKNOWN               "_P"
+
+// MSVC operator sequences.
+#define MSVC_OPSYMB_CONSTRUCTOR             "0"
+#define MSVC_OPSYMB_DESTRUCTOR              "1"
+#define MSVC_OPSYMB_SQUARE_BRACKETS         "A"
+#define MSVC_OPSYMB_ROUND_BRACKETS          "R"
+#define MSVC_OPSYMB_POINTER                 "C"
+#define MSVC_OPSYMB_INCREMENT               "E"
+#define MSVC_OPSYMB_DECREMENT               "F"
+#define MSVC_OPSYMB_NEW                     "2"
+#define MSVC_OPSYMB_NEW_ARRAY               "_U"
+#define MSVC_OPSYMB_DELETE                  "3"
+#define MSVC_OPSYMB_DELETE_ARRAY            "_V"
+#define MSVC_OPSYMB_MAKE_POINTER            "D"
+#define MSVC_OPSYMB_MAKE_REFERENCE          "I"
+#define MSVC_OPSYMB_NOT                     "7"
+#define MSVC_OPSYMB_NEG                     "S"
+#define MSVC_OPSYMB_POINTER_RESOLUTION      "J"
+#define MSVC_OPSYMB_MULTIPLY                "J"
+#define MSVC_OPSYMB_DIVIDE                  "K"
+#define MSVC_OPSYMB_REMAINDER               "L"
+#define MSVC_OPSYMB_PLUS                    "H"
+#define MSVC_OPSYMB_MINUS                   "G"
+#define MSVC_OPSYMB_LEFT_SHIFT              "6"
+#define MSVC_OPSYMB_RIGHT_SHIFT             "5"
+#define MSVC_OPSYMB_LESS_THAN               "M"
+#define MSVC_OPSYMB_GREATER_THAN            "O"
+#define MSVC_OPSYMB_LESSEQ_THAN             "N"
+#define MSVC_OPSYMB_GREATEREQ_THAN          "P"
+#define MSVC_OPSYMB_EQUALITY                "8"
+#define MSVC_OPSYMB_INEQUALITY              "9"
+#define MSVC_OPSYMB_AND                     "I"
+#define MSVC_OPSYMB_OR                      "U"
+#define MSVC_OPSYMB_XOR                     "T"
+#define MSVC_OPSYMB_LOGICAL_AND             "V"
+#define MSVC_OPSYMB_LOGICAL_OR              "W"
+#define MSVC_OPSYMB_ASSIGN                  "4"
+#define MSVC_OPSYMB_MULTIPLY_ASSIGN         "X"
+#define MSVC_OPSYMB_DIVIDE_ASSIGN           "_0"
+#define MSVC_OPSYMB_REMAINDER_ASSIGN        "_1"
+#define MSVC_OPSYMB_PLUS_ASSIGN             "Y"
+#define MSVC_OPSYMB_MINUS_ASSIGN            "Z"
+#define MSVC_OPSYMB_LEFT_SHIFT_ASSIGN       "_3"
+#define MSVC_OPSYMB_RIGHT_SHIFT_ASSIGN      "_2"
+#define MSVC_OPSYMB_AND_ASSIGN              "_4"
+#define MSVC_OPSYMB_OR_ASSIGN               "_5"
+#define MSVC_OPSYMB_XOR_ASSIGN              "_6"
+#define MSVC_OPSYMB_COMMA                   "Q"
+#define MSVC_OPSYMB_CAST_TO                 "B"
 
 symbolType_t symbolicNamespace_t::ResolveParsePoint( void ) const
 {
@@ -354,7 +468,7 @@ static AINLINE bool _GCCParseTypeInstancing(
                     else GCC_LITSYMB_HELPER( DOUBLE )
                     else GCC_LITSYMB_HELPER( LONG_DOUBLE )
                     else GCC_LITSYMB_HELPER( FLOAT128 )
-                    else GCC_LITSYMB_HELPER( ELLIPSIS )
+                    else GCC_LITSYMB_HELPER( VARARG )
                     else
                     {
                         // Unknown literal symbol.
@@ -453,6 +567,8 @@ static AINLINE bool _GCCParseOneOperator(
     else GCC_OPSYMB_HELPER( ROUND_BRACKETS )
     else GCC_OPSYMB_HELPER( SQUARE_BRACKETS )
     else GCC_OPSYMB_HELPER( SIZEOF )
+    else GCC_OPSYMB_HELPER( MAKE_POINTER )
+    else GCC_OPSYMB_HELPER( MAKE_REFERENCE )
     else if ( stracquire( gccStream, GCC_OPSYMB_CAST ) )
     {
         opTypeOut = eOperatorType::CAST_TO;
@@ -556,17 +672,20 @@ static AINLINE bool _GCCParseNamespacePath(
             }
             else
             {
-                // If not an operator, we try checking for special reserved method names.
+                // Special operators.
                 if ( stracquire( gccStream, "C" ) )
                 {
                     // Make sure we have namespace entries.
                     if ( namespaces.empty() )
                         throw mangle_parse_error();
 
-                    ns.nsType = symbolicNamespace_t::eType::NAME;
-                    ns.name = namespaces.back().name;
+                    ns.nsType = symbolicNamespace_t::eType::OPERATOR;
+                    ns.opType = eOperatorType::CONSTRUCTOR;
 
                     // There should be a number, no idea why.
+                    // I think it is for versioning of C++, because the only
+                    // requirement for symbol assignment is case sensitive
+                    // symbol-string comparison.
                     unsigned long unkNum;
 
                     _ParseMangleNumeric( gccStream, unkNum );
@@ -579,10 +698,10 @@ static AINLINE bool _GCCParseNamespacePath(
                     if ( namespaces.empty() )
                         throw mangle_parse_error();
 
-                    ns.nsType = symbolicNamespace_t::eType::NAME;
-                    ns.name = "~" + namespaces.back().name;
+                    ns.nsType = symbolicNamespace_t::eType::OPERATOR;
+                    ns.opType = eOperatorType::DESTRUCTOR;
 
-                    // Ignore number.
+                    // Ignore revision number.
                     unsigned long unkNum;
 
                     _ParseMangleNumeric( gccStream, unkNum );
@@ -827,7 +946,7 @@ static inline symbolType_t _GCCParseMangledSymbolType(
                     else GCC_TYPESYMB_HELPER( DOUBLE )
                     else GCC_TYPESYMB_HELPER( LONG_DOUBLE )
                     else GCC_TYPESYMB_HELPER( FLOAT128 )
-                    else GCC_TYPESYMB_HELPER( ELLIPSIS )
+                    else GCC_TYPESYMB_HELPER( VARARG )
                     else
                     {
                         // If we are not one of the built-in types,
@@ -936,7 +1055,7 @@ bool ProgFunctionSymbol::ParseMangled( const char *codecStream )
 
             if ( _GCCParseNamespacePath( gccStream, symbCollect, namespaces, isClassMethodConst ) )
             {
-                // Done here.
+                isMultiNamespace = true;
             }
             else
             {
@@ -996,7 +1115,7 @@ bool ProgFunctionSymbol::ParseMangled( const char *codecStream )
             }
 
             // Success!
-            this->callingConv = ( isMultiNamespace ? eSymbolCallConv::THISCALL : eSymbolCallConv::CDECL );
+            this->callingConv = eSymbolCallConv::UNKNOWN;
             this->namespaces = std::move( namespaces );
             this->arguments = std::move( arguments );
             this->hasConstQualifier = isClassMethodConst;
@@ -1016,17 +1135,573 @@ bool ProgFunctionSymbol::ParseMangled( const char *codecStream )
     return false;
 }
 
-std::string ProgFunctionSymbol::OutputMangled( eManglingType type )
+static char _MSVCHexTranscode( char hexSymb )
 {
-    if ( type == eManglingType::GCC )
+    switch( hexSymb )
     {
-        // GNU Compiler Collection mangling system.
-    }
-    else if ( type == eManglingType::VISC )
-    {
-        // Microsoft Visual C++ mangling system.
+    case '0': return 'A';
+    case '1': return 'B';
+    case '2': return 'C';
+    case '3': return 'D';
+    case '4': return 'E';
+    case '5': return 'F';
+    case '6': return 'G';
+    case '7': return 'H';
+    case '8': return 'I';
+    case '9': return 'J';
+    case 'A': return 'K';
+    case 'B': return 'L';
+    case 'C': return 'M';
+    case 'D': return 'N';
+    case 'E': return 'O';
+    case 'F': return 'P';
     }
 
+    // Something seriously wrong.
+    throw mangle_parse_error();
+}
+
+// Number encoding.
+static void _MSVCEncodeNumber( unsigned long num, std::string& msvcStream )
+{
+    if ( num >= 1 && num <= 10 )
+    {
+        char charNum = (char)num;
+
+        msvcStream += ( '0' + ( charNum - 1 ) );
+    }
+    else
+    {
+        // Some kind of special-born encoding that replaces '0' to 'F' (hexadecimal)
+        // with 'A' to 'P'. Wicked.
+        // But we can use the C++ library to help us.
+        std::stringstream sstream;
+        sstream << std::hex << std::uppercase;
+        sstream << num;
+
+        std::string hexString = sstream.str();
+
+        // Offset the things.
+        for ( char& c : hexString )
+        {
+            c = _MSVCHexTranscode( c );
+        }
+
+        // Should be properly coded now.
+        msvcStream += hexString;
+
+        // We end of things.
+        msvcStream += '@';
+    }
+}
+
+static void _MSVCOutputSymbolType( const symbolType_t& theType, std::string& msvcStream );
+
+static void _MSVCOutputTemplateArgument( const symbolicTemplateArg_t& arg, std::string& msvcStream )
+{
+    // Can be literal or type.
+    symbolicTemplateArg_t::eType argType = arg.type;
+
+    symbolicTemplateSpec_t *ptr = arg.ptr;
+
+    if ( ptr == NULL )
+        throw mangle_parse_error();
+
+    if ( argType == symbolicTemplateArg_t::eType::TYPE )
+    {
+        // Pretty simple, just output it.
+        const symbolType_t *symbolType = (const symbolType_t*)ptr;
+
+        _MSVCOutputSymbolType( *symbolType, msvcStream );
+    }
+    else if ( argType == symbolicTemplateArg_t::eType::LITERAL )
+    {
+        // Not hard either.
+        const symbolicLiteral_t *symbolLiteral = (const symbolicLiteral_t*)ptr;
+
+        msvcStream += "$0";
+
+        _MSVCEncodeNumber( symbolLiteral->literalValue, msvcStream );
+    }
+    else
+    {
+        // Something we have to yet specify.
+        throw mangle_parse_error();
+    }
+}
+
+static AINLINE void _MSVCOutputNamespacePath( const symbolicNamespace_t::symbolicNamespaces_t& nspath, std::string& pathOut )
+{
+    auto revIter = nspath.rbegin();
+
+    while ( revIter != nspath.rend() )
+    {
+        const symbolicNamespace_t& nitem = *revIter;
+
+        // We kinda depend on the namespace type.
+        symbolicNamespace_t::eType nsType = nitem.nsType;
+
+        if ( nsType == symbolicNamespace_t::eType::NAME )
+        {
+            // Depends on if we are a templated object or not.
+            const symbolicTemplateParams_t& templateArgs = nitem.templateArgs;
+
+            if ( templateArgs.empty() == false )
+            {
+                pathOut += "?$";
+                pathOut += nitem.name;
+                pathOut += "@";
+
+                // Now we give all template arguments.
+                for ( const symbolicTemplateArg_t& arg : templateArgs )
+                {
+                    _MSVCOutputTemplateArgument( arg, pathOut );
+                }
+
+                pathOut += "@";
+            }
+            else
+            {
+                pathOut += nitem.name;
+                pathOut += "@";
+            }
+        }
+        else if ( nsType == symbolicNamespace_t::eType::OPERATOR )
+        {
+            pathOut += "?";
+
+            eOperatorType opType = nitem.opType;
+
+#define MSVC_OPSYMB_HELPER( name_id ) \
+    if ( opType == eOperatorType::##name_id ) \
+    { \
+        pathOut += MSVC_OPSYMB_##name_id##; \
+    }
+
+                 MSVC_OPSYMB_HELPER( CONSTRUCTOR )
+            else MSVC_OPSYMB_HELPER( DESTRUCTOR )
+            else MSVC_OPSYMB_HELPER( SQUARE_BRACKETS )
+            else MSVC_OPSYMB_HELPER( ROUND_BRACKETS )
+            else MSVC_OPSYMB_HELPER( POINTER )
+            else MSVC_OPSYMB_HELPER( INCREMENT )
+            else MSVC_OPSYMB_HELPER( DECREMENT )
+            else MSVC_OPSYMB_HELPER( NEW )
+            else MSVC_OPSYMB_HELPER( NEW_ARRAY )
+            else MSVC_OPSYMB_HELPER( DELETE )
+            else MSVC_OPSYMB_HELPER( DELETE_ARRAY )
+            else MSVC_OPSYMB_HELPER( MAKE_POINTER )
+            else MSVC_OPSYMB_HELPER( MAKE_REFERENCE )
+            else MSVC_OPSYMB_HELPER( NOT )
+            else MSVC_OPSYMB_HELPER( NEG )
+            else MSVC_OPSYMB_HELPER( POINTER_RESOLUTION )
+            else MSVC_OPSYMB_HELPER( MULTIPLY )
+            else MSVC_OPSYMB_HELPER( DIVIDE )
+            else MSVC_OPSYMB_HELPER( REMAINDER )
+            else MSVC_OPSYMB_HELPER( PLUS )
+            else MSVC_OPSYMB_HELPER( MINUS )
+            else MSVC_OPSYMB_HELPER( LEFT_SHIFT )
+            else MSVC_OPSYMB_HELPER( RIGHT_SHIFT )
+            else MSVC_OPSYMB_HELPER( LESS_THAN )
+            else MSVC_OPSYMB_HELPER( GREATER_THAN )
+            else MSVC_OPSYMB_HELPER( LESSEQ_THAN )
+            else MSVC_OPSYMB_HELPER( GREATEREQ_THAN )
+            else MSVC_OPSYMB_HELPER( EQUALITY )
+            else MSVC_OPSYMB_HELPER( INEQUALITY )
+            else MSVC_OPSYMB_HELPER( AND )
+            else MSVC_OPSYMB_HELPER( OR )
+            else MSVC_OPSYMB_HELPER( XOR )
+            else MSVC_OPSYMB_HELPER( LOGICAL_AND )
+            else MSVC_OPSYMB_HELPER( LOGICAL_OR )
+            else MSVC_OPSYMB_HELPER( ASSIGN )
+            else MSVC_OPSYMB_HELPER( MULTIPLY_ASSIGN )
+            else MSVC_OPSYMB_HELPER( DIVIDE_ASSIGN )
+            else MSVC_OPSYMB_HELPER( REMAINDER_ASSIGN )
+            else MSVC_OPSYMB_HELPER( PLUS_ASSIGN )
+            else MSVC_OPSYMB_HELPER( MINUS_ASSIGN )
+            else MSVC_OPSYMB_HELPER( LEFT_SHIFT_ASSIGN )
+            else MSVC_OPSYMB_HELPER( RIGHT_SHIFT_ASSIGN )
+            else MSVC_OPSYMB_HELPER( AND_ASSIGN )
+            else MSVC_OPSYMB_HELPER( OR_ASSIGN )
+            else MSVC_OPSYMB_HELPER( XOR_ASSIGN )
+            else MSVC_OPSYMB_HELPER( COMMA )
+            else MSVC_OPSYMB_HELPER( CAST_TO )
+            else
+            {
+                // Unknown, sadly.
+                throw mangle_parse_error();
+            }
+        }
+
+        revIter++;
+    }
+
+    pathOut += "@";
+}
+
+static AINLINE char _MSVCGetCallConvSymbol( eSymbolCallConv callingConv )
+{
+    if ( callingConv == eSymbolCallConv::UNKNOWN )
+    {
+        return '?';
+    }
+    else if ( callingConv == eSymbolCallConv::CDECL )
+    {
+        return MSVC_CALLCONV_CDECL;
+    }
+    else if ( callingConv == eSymbolCallConv::STDCALL )
+    {
+        return MSVC_CALLCONV_STDCALL;
+    }
+    else if ( callingConv == eSymbolCallConv::FASTCALL )
+    {
+        return MSVC_CALLCONV_FASTCALL;
+    }
+    else if ( callingConv == eSymbolCallConv::THISCALL )
+    {
+        return MSVC_CALLCONV_THISCALL;
+    }
+    else
+    {
+        throw mangle_parse_error();
+    }
+}
+
+static void _MSVCProcessFunctionToken( const symbolTypeSuit_function_t *funcTypeSuit, std::string& msvcStream )
+{
+    // Print out a function declaration in MSVC mangled format.
+
+    msvcStream += "P6";
+
+    eSymbolCallConv callingConv = funcTypeSuit->callConv;
+
+    if ( callingConv == eSymbolCallConv::UNKNOWN )
+    {
+        msvcStream += MSVC_CALLCONV_CDECL;  // maybe someday we will have this information.
+    }
+    else
+    {
+        msvcStream += _MSVCGetCallConvSymbol( callingConv );
+    }
+
+    // We do have a return type this time, yay!
+    _MSVCOutputSymbolType( funcTypeSuit->returnType, msvcStream );
+
+    // Now all parameters.
+    // Luckily we dont have a faggot 'skip-term-symbol' logic this time.
+    for ( const symbolType_t& type : funcTypeSuit->parameters )
+    {
+        _MSVCOutputSymbolType( type, msvcStream );
+    }
+
+    // Terminate the stream.
+    msvcStream += "@Z";
+}
+
+static void _MSVCProcessArrayToken( const symbolTypeSuit_array_t *arrayTypeSuit, std::string& msvcStream )
+{
+    // The array is a size declaration and following it is the type.
+
+    msvcStream += "Y0"; // for now we only support one-dimensional arrays.
+
+    // In MSVC mode, we must have an index.
+    unsigned long index = 0;
+    
+    if ( arrayTypeSuit->hasIndex )
+    {
+        index = arrayTypeSuit->sizeOfArray;
+    }
+    
+    _MSVCEncodeNumber( index, msvcStream );
+
+    // Now for the type.
+    _MSVCOutputSymbolType( arrayTypeSuit->typeOfItem, msvcStream );
+}
+
+static void _MSVCProcessRegularToken( const symbolTypeSuit_regular_t *regTypeSuit, std::string& msvcStream )
+{
+    // Qualifiers count.
+    eSymbolTypeQualifier qualifier = regTypeSuit->valueQual;
+
+    if ( qualifier == eSymbolTypeQualifier::POINTER )
+    {
+        const symbolType_t *subtype = regTypeSuit->subtype;
+
+        if ( !subtype )
+            throw mangle_parse_error();
+
+        symbolTypeSuit_t *subTypeSuit = subtype->typeSuit;
+
+        if ( !subTypeSuit )
+            throw mangle_parse_error();
+
+        // Special case for function symbols being pointed at.
+        // In MSVC mode function symbols are pointers themselves, so we must 'remove a pointer'
+        // by processing the function symbol directly here.
+        if ( symbolTypeSuit_function_t *funcTypeSuit = dynamic_cast <symbolTypeSuit_function_t*> ( subTypeSuit ) )
+        {
+            // Just process directly and shorten out.
+            _MSVCProcessFunctionToken( funcTypeSuit, msvcStream );
+            return;
+        }
+
+        // Special case for array tokens aswell, symmetric to the cause of the function token.
+        if ( symbolTypeSuit_array_t *arrayTypeSuit = dynamic_cast <symbolTypeSuit_array_t*> ( subTypeSuit ) )
+        {
+            // Give it the regular pointer thing.
+            msvcStream += "P";
+            
+            if ( regTypeSuit->isConst )
+            {
+                msvcStream += "B";
+            }
+            else
+            {
+                msvcStream += "A";
+            }
+
+            // Once again process directly here.
+            _MSVCProcessArrayToken( arrayTypeSuit, msvcStream );
+            return;
+        }
+    }
+
+    bool requiresStorageMod = false;
+
+    if ( qualifier == eSymbolTypeQualifier::VALUE )
+    {
+        // Under MSVC values go blank.
+        // So we just write the type symbol.
+        eSymbolValueType valType = regTypeSuit->valueType;
+
+#define MSVC_TYPESYMB_HELPER( name_id ) \
+    if ( valType == eSymbolValueType::##name_id ) \
+    { \
+        msvcStream += MSVC_TYPESYMB_##name_id; \
+    }
+
+             MSVC_TYPESYMB_HELPER( VOID )
+        else MSVC_TYPESYMB_HELPER( WCHAR_T )
+        else MSVC_TYPESYMB_HELPER( BOOL )
+        else MSVC_TYPESYMB_HELPER( CHAR )
+        else MSVC_TYPESYMB_HELPER( UNSIGNED_CHAR )
+        else MSVC_TYPESYMB_HELPER( SHORT )
+        else MSVC_TYPESYMB_HELPER( UNSIGNED_SHORT )
+        else MSVC_TYPESYMB_HELPER( INT )
+        else MSVC_TYPESYMB_HELPER( UNSIGNED_INT )
+        else MSVC_TYPESYMB_HELPER( LONG )
+        else MSVC_TYPESYMB_HELPER( UNSIGNED_LONG )
+        else MSVC_TYPESYMB_HELPER( LONG_LONG )
+        else MSVC_TYPESYMB_HELPER( UNSIGNED_LONG_LONG )
+        // no support for INT128
+        else MSVC_TYPESYMB_HELPER( FLOAT )
+        else MSVC_TYPESYMB_HELPER( DOUBLE )
+        else MSVC_TYPESYMB_HELPER( LONG_DOUBLE )
+        // no support for FLOAT128
+        else MSVC_TYPESYMB_HELPER( VARARG )
+        else if ( valType == eSymbolValueType::CUSTOM )
+        {
+            // We assume custom things are always classes.
+            msvcStream += "V";
+
+            // Append the namespace to it.
+            _MSVCOutputNamespacePath( regTypeSuit->extTypeName, msvcStream );
+        }
+        else
+        {
+            throw mangle_parse_error();
+        }
+    }
+    else if ( qualifier == eSymbolTypeQualifier::POINTER )
+    {
+        if ( regTypeSuit->isConst )
+        {
+            msvcStream += "Q";
+        }
+        else
+        {
+            msvcStream += "P";
+        }
+
+        requiresStorageMod = true;
+    }
+    else if ( qualifier == eSymbolTypeQualifier::REFERENCE )
+    {
+        msvcStream += "A";
+
+        requiresStorageMod = true;
+    }
+    else
+    {
+        // Unknown or unsupported.
+        throw mangle_parse_error();
+    }
+
+    if ( requiresStorageMod )
+    {
+        // Then we have a type that we point at, in which case we resolve its storage requirement here.
+        const symbolType_t *pointAtType = regTypeSuit->subtype;
+
+        if ( !pointAtType )
+            throw mangle_parse_error();
+
+        if ( pointAtType->isConstant() )
+        {
+            msvcStream += "B";
+        }
+        else
+        {
+            msvcStream += "A";
+        }
+
+        // Now go into the subtype parsing.
+        _MSVCOutputSymbolType( *pointAtType, msvcStream );
+    }
+}
+
+static void _MSVCOutputSymbolType( const symbolType_t& theType, std::string& msvcStream )
+{
+    symbolTypeSuit_t *typeSuit = theType.typeSuit;
+
+    if ( typeSuit == NULL )
+    {
+        // MSVC supports the "UNKNOWN" type spec.
+        msvcStream += MSVC_TYPESYMB_UNKNOWN;
+        return;
+    }
+
+    // It is really simple to encode regular suited types.
+    // So dispatch according to it.
+    symbolTypeSuit_regular_t *regTypeSuit = dynamic_cast <symbolTypeSuit_regular_t*> ( typeSuit );
+
+    // Regular values (POD?)
+    if ( regTypeSuit )
+    {
+        _MSVCProcessRegularToken( regTypeSuit, msvcStream );
+    }
+    else
+    {
+        // We also have to support functions and up-cast them to pointers.
+        if ( symbolTypeSuit_function_t *funcTypeSuit = dynamic_cast <symbolTypeSuit_function_t*> ( typeSuit ) )
+        {
+            _MSVCProcessFunctionToken( funcTypeSuit, msvcStream );
+        }
+        else
+        {
+            // Not supported yet :/
+            throw mangle_parse_error();
+        }
+    }
+}
+
+bool ProgFunctionSymbol::OutputMangled( eManglingType type, std::string& mangledOut )
+{
+    std::string mangleString;
+
+    try
+    {
+        if ( type == eManglingType::GCC )
+        {
+            // GNU Compiler Collection mangling system.
+        }
+        else if ( type == eManglingType::VISC )
+        {
+            // Microsoft Visual C++ mangling system.
+            mangleString += "?";    // heading token.
+
+            // We need to inspect the namespace ourselves.
+            if ( this->namespaces.empty() )
+                throw mangle_parse_error();
+
+            const symbolicNamespace_t& lastNS = this->namespaces.back();
+
+            // Write namespace location.
+            _MSVCOutputNamespacePath( this->namespaces, mangleString );
+
+            // Next up is the namespace visibility thing.
+            // For that we do a clever little thing for now.
+            eSymbolCallConv callingConv = this->callingConv;
+
+            bool hasFunctionStorageSpec = false;
+
+            if ( callingConv == eSymbolCallConv::THISCALL )
+            {
+                mangleString += MSVC_MEMBMOD_PUB_DEFAULT;
+
+                hasFunctionStorageSpec = true;
+            }
+            else
+            {
+                mangleString += MSVC_MEMBMOD_PUB_STATIC;
+            }
+
+            if ( hasFunctionStorageSpec )
+            {
+                // Now is the storage specifier for this function.
+                if ( this->hasConstQualifier )
+                {
+                    mangleString += MSVC_STORAGE_CONST;
+                }
+                else
+                {
+                    mangleString += MSVC_STORAGE_NEAR;
+                }
+            }
+
+            // Calling convention.
+            mangleString += _MSVCGetCallConvSymbol( callingConv );
+
+            // By default we have no idea what the return type is.
+            // This could change later.
+            mangleString += MSVC_TYPESYMB_UNKNOWN;
+
+            // Now we put all parameters.
+            // There are some special rules to this.
+            bool leaveOutTermSymbol = false;
+
+            const symbolType_t::symbolTypes_t& arguments = this->arguments;
+
+            if ( arguments.size() >= 1 )
+            {
+                // If we just have a void, we have to leave out the ending mark.
+                const symbolType_t& firstType = arguments.front();
+
+                symbolTypeSuit_regular_t *regFirstSymb = dynamic_cast <symbolTypeSuit_regular_t*> ( firstType.typeSuit );
+
+                if ( regFirstSymb )
+                {
+                    // Are we a void value?
+                    if ( regFirstSymb->valueQual == eSymbolTypeQualifier::VALUE &&
+                         regFirstSymb->valueType == eSymbolValueType::VOID )
+                    {
+                        leaveOutTermSymbol = true;
+                    }
+                }
+            }
+
+            // Put out the symbols.
+            for ( const symbolType_t& param : arguments )
+            {
+                _MSVCOutputSymbolType( param, mangleString );
+            }
+
+            mangleString += "@";    // Finishing the type list.
+
+            // We do not care about throw declarations, yet.
+
+            // Finish.
+            // Sometimes we leave this symbol out.
+            if ( !leaveOutTermSymbol )
+            {
+                mangleString += "Z";
+            }
+
+            mangledOut = std::move( mangleString );
+            return true;
+        }
+    }
+    catch( mangle_parse_error& )    // Errors mean bad.
+    {}
+
     // Not supported yet.
-    return std::string();
+    return false;
 }

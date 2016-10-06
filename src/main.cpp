@@ -217,8 +217,11 @@ static void tryGenerateSamplePDB( PEFile& peFile )
 
                         if ( gotSymbol )
                         {
-                            //TODO.
-                            //symbName = symbCodec.OutputMangled( ProgFunctionSymbol::eManglingType::VISC );
+                            // Remangle the name in Visual C++ format, if possible.
+                            symbCodec.OutputMangled(
+                                ProgFunctionSymbol::eManglingType::VISC,
+                                symbName
+                            );
                         }
                     }
 

@@ -31,17 +31,17 @@ enum class eSymbolValueType
     DOUBLE,
     LONG_DOUBLE,
     FLOAT128,
-    ELLIPSIS,
+    VARARG,
     CUSTOM
 };
 
 enum class eSymbolTypeQualifier
 {
-    VALUE,
+    VALUE,      // with built-in type specifically
     POINTER,
     REFERENCE,
     RVAL_REFERENCE,
-    CUSTOM
+    CUSTOM      // with type namespace given
 };
 
 struct mangle_parse_error
@@ -475,6 +475,8 @@ struct symbolTypeSuit_array_t : public symbolTypeSuit_t
 // Built-in operator types for convenience.
 enum class eOperatorType
 {
+    CONSTRUCTOR,
+    DESTRUCTOR,
     NEW,
     NEW_ARRAY,
     DELETE,
@@ -519,7 +521,9 @@ enum class eOperatorType
     SQUARE_BRACKETS,
     QUESTIONMARK,
     SIZEOF,
-    CAST_TO
+    CAST_TO,
+    MAKE_POINTER,           // * (unary)
+    MAKE_REFERENCE          // & (unary)
 };
 
 struct symbolicNamespace_t : public symbolParsePoint_t
@@ -766,7 +770,7 @@ struct ProgFunctionSymbol
 
     // Mangling transcoding API.
     bool ParseMangled( const char *codecString );
-    std::string OutputMangled( eManglingType type );
+    bool OutputMangled( eManglingType type, std::string& mangledOut );
 };
 
 #endif //_MANGLING_TOOLS_HEADER_
