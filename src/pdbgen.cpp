@@ -98,15 +98,44 @@ void tryGenerateSamplePDB( PEFile& peFile, CFileTranslator *outputRoot, const fi
     // Prepare symbol names from an input file.
     symbolNames_t symbols;
     {
-        std::unique_ptr <CFile> symbolsFile( outputRoot->Open( L"symbols.txt", "rb" ) );
+        // We try both the output root and the file root for the symbols file.
+        CFile *symbolsFile = NULL;
+        // * OUTPUT ROOT.
+        {
+            symbolsFile = outputRoot->Open( L"symbols.txt", L"rb" );
+
+            if ( symbolsFile )
+            {
+                printf( "found symbols file in output root, reading.\n" );
+            }
+        }
+        // * FILE ROOT.
+        if ( !symbolsFile && ( outputRoot != fileRoot ) )
+        {
+            symbolsFile = fileRoot->Open( L"symbols.txt", L"rb" );
+
+            if ( symbolsFile )
+            {
+                printf( "found symbols file in working root, reading.\n" );
+            }
+        }
 
         if ( symbolsFile )
         {
-            printf( "found symbols file, reading.\n" );
+            try
+            {
+                symbols = ParseSymbolNames( symbolsFile );
 
-            symbols = ParseSymbolNames( symbolsFile.get() );
+                printf( "finished reading symbols file.\n" );
+            }
+            catch( ... )
+            {
+                delete symbolsFile;
 
-            printf( "finished reading symbols file.\n" );
+                throw;
+            }
+
+            delete symbolsFile;
         }
     }
     
