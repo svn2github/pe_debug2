@@ -3,8 +3,8 @@
 Use this program to put debug symbols from an IDA database into a PDB database,
 so that other debuggers like Visual Studio can display debug information.
 
-GTAForums topic: http://gtaforums.com/topic/870170-idb-to-visual-studio-symbol-injection/
-YouTube video: https://www.youtube.com/watch?v=Vn9YNqm5ny0
+* GTAForums topic: http://gtaforums.com/topic/870170-idb-to-visual-studio-symbol-injection/
+* YouTube video: https://www.youtube.com/watch?v=Vn9YNqm5ny0
 
 Wish to contribute? Contact me at wordwhirl@outlook.de for details.
 
