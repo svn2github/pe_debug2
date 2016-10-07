@@ -93,12 +93,12 @@ struct CV_INFO_PDB70
     //BYTE       PdbFileName[1];
 };
 
-void tryGenerateSamplePDB( PEFile& peFile, const filePath& outPathWithoutExt )
+void tryGenerateSamplePDB( PEFile& peFile, CFileTranslator *outputRoot, const filePath& outPathWithoutExt )
 {
     // Prepare symbol names from an input file.
     symbolNames_t symbols;
     {
-        std::unique_ptr <CFile> symbolsFile( fileRoot->Open( L"symbols.txt", "rb" ) );
+        std::unique_ptr <CFile> symbolsFile( outputRoot->Open( L"symbols.txt", "rb" ) );
 
         if ( symbolsFile )
         {
@@ -129,6 +129,7 @@ void tryGenerateSamplePDB( PEFile& peFile, const filePath& outPathWithoutExt )
     if ( openSuccess == FALSE )
     {
         // We fail in life.
+        printf( "failed to create PDB file\n" );
         return;
     }
 

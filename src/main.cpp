@@ -23,7 +23,7 @@
 extern CFileSystem *fileSystem;
 
 // From other compilation modules (for a reason).
-void tryGenerateSamplePDB( PEFile& peFile, const filePath& outPathWithoutExt );
+void tryGenerateSamplePDB( PEFile& peFile, CFileTranslator *outputRoot, const filePath& outPathWithoutExt );
 
 static void printHeader( void )
 {
@@ -79,62 +79,31 @@ int main( int _, char *__[] )
 
     CFileSystem::Create( constrParam );
 
+    bool successful = false;
+
     try
     {
-        // Get access to the output file root.
-        std::unique_ptr <CFileTranslator> workRoot( fileSystem->CreateSystemMinimumAccessPoint( executablePath.c_str() ) );
+        PEFile filedata;
 
-        if ( workRoot )
+        bool gotInputData = false;
+
+        // Get access to the input file root.
+        std::unique_ptr <CFileTranslator> workInputRoot( fileSystem->CreateSystemMinimumAccessPoint( executablePath.c_str() ) );
+
+        if ( workInputRoot )
         {
             // Read the PE file.
-            std::unique_ptr <CFile> filePtr( workRoot->Open( executablePath.c_str(), "rb" ) );
+            std::unique_ptr <CFile> filePtr( workInputRoot->Open( executablePath.c_str(), "rb" ) );
 
             if ( filePtr )
             {
                 printf( "found input file, processing...\n" );
 
-                PEFile filedata;
-
                 filedata.LoadFromDisk( filePtr.get() );
 
                 printf( "loaded input file from disk\n" );
 
-                // Decide on the PE image type what output filename we should pick.
-                filePath outFileName;
-
-                // First get the same target directory as the input file.
-                filePath nameItem = FileSystem::GetFileNameItem( filePtr->GetPath(), false, &outFileName, NULL );
-
-                assert( nameItem.empty() == false );
-
-                outFileName += nameItem;
-                outFileName += "_debug";
-
-                // Do some PDB magic I guess.
-                tryGenerateSamplePDB( filedata, outFileName );
-
-                // We get the extension from the PE file format.
-                if ( filedata.IsDynamicLinkLibrary() )
-                {
-                    outFileName += ".dll";
-                }
-                else
-                {
-                    outFileName += ".exe";
-                }
-
-                // Write it to another location.
-                // This is a test that we can 1:1 convert executables.
-                std::unique_ptr <CFile> outFilePtr( fileRoot->Open( outFileName, "wb" ) );
-
-                if ( outFilePtr )
-                {
-                    printf( "writing PE file\n" );
-
-                    filedata.WriteToStream( outFilePtr.get() );
-
-                    printf( "done!\n" );
-                }
+                gotInputData = true;
             }
             else
             {
@@ -143,7 +112,98 @@ int main( int _, char *__[] )
         }
         else
         {
-            printf( "failed to get handle to work folder\n" );
+            printf( "failed to get handle to input work folder\n" );
+        }
+
+        if ( gotInputData )
+        {
+            // Next up is deciding on an output file root, which can be inside by the input executable or if not possible by
+            // the running executable.
+            CFileTranslator *outputRoot = NULL;
+            bool isOutputRootShared = false;
+            // * EXE PATH.
+            {
+                outputRoot = fileSystem->CreateTranslator( executablePath.c_str(), DIR_FLAG_WRITABLE );
+
+                if ( outputRoot )
+                {
+                    printf( "chose EXE original location as output\n" );
+                }
+            }
+            // * RUNNING PATH.
+            if ( !outputRoot )
+            {
+                outputRoot = fileRoot;
+
+                isOutputRootShared = true;
+
+                printf( "chose running path as output\n" );
+            }
+
+            if ( outputRoot )
+            {
+                try
+                {
+                    // Decide on the PE image type what output filename we should pick.
+                    filePath outFileName;
+                    outputRoot->GetFullPathFromRoot( "@", false, outFileName );
+
+                    // First get the same target directory as the input file.
+                    filePath nameItem = FileSystem::GetFileNameItem( executablePath.c_str(), false, NULL, NULL );
+
+                    assert( nameItem.empty() == false );
+
+                    outFileName += nameItem;
+                    outFileName += "_debug";
+
+                    // Do some PDB magic I guess.
+                    tryGenerateSamplePDB( filedata, outputRoot, outFileName );
+
+                    // We get the extension from the PE file format.
+                    if ( filedata.IsDynamicLinkLibrary() )
+                    {
+                        outFileName += ".dll";
+                    }
+                    else
+                    {
+                        outFileName += ".exe";
+                    }
+
+                    // Write it to another location.
+                    // This is a test that we can 1:1 convert executables.
+                    // We want to be able to write into any location.
+                    std::unique_ptr <CFile> outFilePtr( outputRoot->Open( outFileName, "wb" ) );
+
+                    if ( outFilePtr )
+                    {
+                        printf( "writing PE file\n" );
+
+                        filedata.WriteToStream( outFilePtr.get() );
+
+                        printf( "done!\n" );
+
+                        successful = true;
+                    }
+                    else
+                    {
+                        printf( "failed to create output PE file\n" );
+                    }
+                }
+                catch( ... )
+                {
+                    if ( !isOutputRootShared )
+                    {
+                        delete outputRoot;
+                    }
+
+                    throw;
+                }
+
+                if ( !isOutputRootShared )
+                {
+                    delete outputRoot;
+                }
+            }
         }
     }
     catch( ... )
@@ -156,8 +216,11 @@ int main( int _, char *__[] )
     // Clean-up.
     CFileSystem::Destroy( fileSystem );
 
-    printf( "\n\nHave fun!\n" );
+    if ( successful )
+    {
+        printf( "\n\nHave fun!\n" );
+    }
 
     // :-)
-    return 0;
+    return ( successful ? 0 : -2 );
 }
