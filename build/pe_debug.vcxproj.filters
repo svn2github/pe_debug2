@@ -9,6 +9,7 @@
       <Filter>debugsdk</Filter>
     </ClCompile>
     <ClCompile Include="..\src\mangle.cpp" />
+    <ClCompile Include="..\src\pdbgen.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\StdInc.h" />

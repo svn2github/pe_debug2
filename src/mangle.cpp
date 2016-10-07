@@ -10,6 +10,8 @@
 // Helpful docs:
 //  https://github.com/gchatelet/gcc_cpp_mangling_documentation
 //  http://www.agner.org/optimize/calling_conventions.pdf
+//  http://demangler.com/
+//  http://www.int0x80.gr/papers/name_mangling.pdf
 
 // GCC mangling operator symbols.
 #define GCC_OPSYMB_NEW                  "nw"

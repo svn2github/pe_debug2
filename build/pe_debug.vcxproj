@@ -97,7 +97,7 @@
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <MinimalRebuild>false</MinimalRebuild>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
     </ClCompile>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -109,6 +109,9 @@
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
@@ -121,7 +124,7 @@
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <MinimalRebuild>false</MinimalRebuild>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
     </ClCompile>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -133,6 +136,9 @@
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -145,7 +151,7 @@
       <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\;..\shared\peframework\include\;..\src\pdb_essential\;..\shared\gtaconfig\include\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -155,6 +161,9 @@
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -170,7 +179,7 @@
       <AdditionalIncludeDirectories>..\shared\eirrepo\;..\shared\FileSystem\src\;..\src\config\;..\shared\peframework\include\;..\src\pdb_essential\;..\shared\gtaconfig\include\</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <DisableSpecificWarnings>4996</DisableSpecificWarnings>
-      <TreatWChar_tAsBuiltInType>false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType>true</TreatWChar_tAsBuiltInType>
     </ClCompile>
     <Link>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -180,6 +189,9 @@
       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
       <EntryPointSymbol>_DebugInit</EntryPointSymbol>
       <RandomizedBaseAddress>true</RandomizedBaseAddress>
+      <SubSystem>Console</SubSystem>
+      <IgnoreSpecificDefaultLibraries>
+      </IgnoreSpecificDefaultLibraries>
     </Link>
     <PostBuildEvent>
       <Command>xcopy /Y "$(TargetPath)" "..\output\"</Command>
@@ -190,6 +202,12 @@
     <ClCompile Include="..\shared\debugsdk\dbgtrace.cpp" />
     <ClCompile Include="..\src\main.cpp" />
     <ClCompile Include="..\src\mangle.cpp" />
+    <ClCompile Include="..\src\pdbgen.cpp">
+      <TreatWChar_tAsBuiltInType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</TreatWChar_tAsBuiltInType>
+      <TreatWChar_tAsBuiltInType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</TreatWChar_tAsBuiltInType>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\shared\debugsdk\dbgheap.h" />
