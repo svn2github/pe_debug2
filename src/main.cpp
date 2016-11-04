@@ -6,6 +6,7 @@
 #include <assert.h>
 
 #include <CFileSystem.h>
+#include <CFileSystem.common.stl.h>
 
 #include <peframework.h>
 
@@ -58,17 +59,17 @@ int main( int _, char *__[] )
         return -1;
     }
 
-    std::wstring executablePath;
+    std::wstring cfgExecutablePath;
     {
         // We skip the source executable path.
         for ( int n = 1; n < argc; n++ )
         {
             if ( n != 1 )
             {
-                executablePath += L" ";
+                cfgExecutablePath += L" ";
             }
 
-            executablePath += cmdArgs[ n ];
+            cfgExecutablePath += cmdArgs[ n ];
         }
     }
 
@@ -87,19 +88,29 @@ int main( int _, char *__[] )
 
         bool gotInputData = false;
 
+        filePath executablePath( cfgExecutablePath.c_str(), cfgExecutablePath.size() );
+
+        // Attempt to parse the path through the current application directory.
+        fileRoot->GetFullPathFromRoot( cfgExecutablePath.c_str(), true, executablePath );
+
         // Get access to the input file root.
-        std::unique_ptr <CFileTranslator> workInputRoot( fileSystem->CreateSystemMinimumAccessPoint( executablePath.c_str() ) );
+        std::unique_ptr <CFileTranslator> workInputRoot( fileSystem->CreateSystemMinimumAccessPoint( executablePath ) );
 
         if ( workInputRoot )
         {
             // Read the PE file.
-            std::unique_ptr <CFile> filePtr( workInputRoot->Open( executablePath.c_str(), "rb" ) );
+            std::unique_ptr <CFile> filePtr( workInputRoot->Open( executablePath, "rb" ) );
 
             if ( filePtr )
             {
+                FileSystem::fileStreamBuf stlBuf( filePtr.get() );
+                std::iostream stlStream( &stlBuf );
+
+                PEStreamSTL peStream( &stlStream );
+
                 printf( "found input file, processing...\n" );
 
-                filedata.LoadFromDisk( filePtr.get() );
+                filedata.LoadFromDisk( &peStream );
 
                 printf( "loaded input file from disk\n" );
 
@@ -123,7 +134,7 @@ int main( int _, char *__[] )
             bool isOutputRootShared = false;
             // * EXE PATH.
             {
-                outputRoot = fileSystem->CreateTranslator( executablePath.c_str(), DIR_FLAG_WRITABLE );
+                outputRoot = fileSystem->CreateTranslator( executablePath, DIR_FLAG_WRITABLE );
 
                 if ( outputRoot )
                 {
@@ -149,7 +160,7 @@ int main( int _, char *__[] )
                     outputRoot->GetFullPathFromRoot( "@", false, outFileName );
 
                     // First get the same target directory as the input file.
-                    filePath nameItem = FileSystem::GetFileNameItem( executablePath.c_str(), false, NULL, NULL );
+                    filePath nameItem = FileSystem::GetFileNameItem( cfgExecutablePath.c_str(), false, NULL, NULL );
 
                     assert( nameItem.empty() == false );
 
@@ -176,9 +187,14 @@ int main( int _, char *__[] )
 
                     if ( outFilePtr )
                     {
+                        FileSystem::fileStreamBuf stlBuf( outFilePtr.get() );
+                        std::iostream stlStream( &stlBuf );
+
+                        PEStreamSTL peStream( &stlStream );
+
                         printf( "writing PE file\n" );
 
-                        filedata.WriteToStream( outFilePtr.get() );
+                        filedata.WriteToStream( &peStream );
 
                         printf( "done!\n" );
 
